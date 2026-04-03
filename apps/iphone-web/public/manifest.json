@@ -1,0 +1,18 @@
+{
+  "name": "DropBeam",
+  "short_name": "DropBeam",
+  "description": "Offline local file transfer for iPhone Safari.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#07101d",
+  "theme_color": "#07101d",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
+
