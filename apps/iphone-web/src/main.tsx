@@ -1,23 +1,20 @@
-import React from "react";
-import ReactDOM from "react-dom/client";
-import "@dropbeam/shared-ui/tokens.css";
-import App from "./App";
-import "./styles.css";
+import React from 'react';
+import ReactDOM from 'react-dom/client';
 
-if (typeof window !== "undefined" && "serviceWorker" in navigator && import.meta.env.PROD) {
-  void window.addEventListener("load", () => {
-    void navigator.serviceWorker.register("/sw.js");
-  });
-}
+import '@dropbeam/shared-ui/tokens.css';
 
-ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>,
-);
+import App from './App.js';
+import './index.css';
+import './styles.css';
 
-if ('serviceWorker' in navigator) {
+if (typeof window !== 'undefined' && 'serviceWorker' in navigator && import.meta.env.PROD) {
   window.addEventListener('load', () => {
     void navigator.serviceWorker.register('/sw.js');
   });
 }
+
+ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>,
+);

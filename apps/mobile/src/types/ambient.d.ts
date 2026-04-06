@@ -4,8 +4,16 @@ declare module 'react' {
   export type SetStateAction<T> = T | ((previous: T) => T);
   export type Dispatch<T> = (value: T) => void;
   export type CSSProperties = Record<string, unknown>;
+  export type HTMLAttributes<T> = Record<string, unknown> & {
+    className?: string;
+    style?: any;
+  };
   export type InputHTMLAttributes<T> = Record<string, unknown> & { ref?: any };
-  export type ButtonHTMLAttributes<T> = Record<string, unknown> & { ref?: any };
+  export type ButtonHTMLAttributes<T> = Record<string, unknown> & {
+    ref?: any;
+    className?: string;
+    type?: 'button' | 'submit' | 'reset';
+  };
 
   export function useState<T>(initial: T): [T, Dispatch<SetStateAction<T>>];
   export function useEffect(effect: () => void | (() => void), deps?: readonly unknown[]): void;
@@ -38,6 +46,16 @@ declare module '@dropbeam/protocol' {
     id: string;
     name: string;
     size: number;
+  }
+
+  export interface TransferItem {
+    name: string;
+    progress: number;
+    sizeLabel: string;
+    kind: string;
+    status: string;
+    speedLabel?: string;
+    etaLabel?: string;
   }
 
   export interface ClipboardState {

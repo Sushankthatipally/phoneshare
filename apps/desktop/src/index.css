@@ -4,12 +4,8 @@
 
 :root {
   color-scheme: dark;
-  font-family: Inter, "Segoe UI", sans-serif;
-  background:
-    radial-gradient(circle at top left, rgba(34, 211, 238, 0.18), transparent 28%),
-    radial-gradient(circle at top right, rgba(16, 185, 129, 0.14), transparent 24%),
-    radial-gradient(circle at bottom center, rgba(56, 189, 248, 0.08), transparent 32%),
-    #07101d;
+  font-family: "IBM Plex Mono", "Cascadia Mono", "JetBrains Mono", "Consolas", monospace;
+  background: #000000;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -28,12 +24,11 @@ body,
 
 body {
   min-height: 100vh;
-  color: #f8fbff;
+  color: #ffffff;
   background:
-    linear-gradient(180deg, rgba(8, 12, 22, 0.65) 0%, rgba(5, 10, 19, 0.92) 100%),
-    radial-gradient(circle at top left, rgba(34, 211, 238, 0.16), transparent 22%),
-    radial-gradient(circle at bottom right, rgba(16, 185, 129, 0.08), transparent 20%),
-    #07101d;
+    radial-gradient(circle at top left, rgba(255, 255, 255, 0.08), transparent 18%),
+    radial-gradient(circle at bottom right, rgba(255, 255, 255, 0.06), transparent 18%),
+    linear-gradient(180deg, #020202 0%, #000000 100%);
 }
 
 body::before {
@@ -42,24 +37,30 @@ body::before {
   inset: 0;
   pointer-events: none;
   background-image:
-    linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
-  background-size: 72px 72px;
-  mask-image: radial-gradient(circle at center, black 45%, transparent 100%);
-  opacity: 0.35;
+    linear-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+  background-size: 28px 28px;
+  opacity: 0.14;
+  mask-image: radial-gradient(circle at center, black 46%, transparent 100%);
+}
+
+#root {
+  isolation: isolate;
 }
 
 ::selection {
-  background: rgba(34, 211, 238, 0.3);
+  background: rgba(255, 255, 255, 0.22);
 }
 
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: hsl(var(--muted));
-  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.18);
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: hsl(var(--muted-foreground));
+  background: rgba(255, 255, 255, 0.28);
 }

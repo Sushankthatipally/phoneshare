@@ -1,5 +1,7 @@
 import { startTransition, useMemo, useState } from 'react';
 
+import { Link2, SendHorizontal, Upload, Zap } from 'lucide-react';
+
 import { Badge, Button, GlassPanel } from '@dropbeam/shared-ui';
 
 import { ConnectScreen } from './screens/Connect.js';
@@ -10,10 +12,10 @@ import { usePhoneBackend } from './services/usePhoneBackend.js';
 
 type PhoneScreen = 'connect' | 'receive' | 'send';
 
-const screenMap: Record<PhoneScreen, { title: string; note: string }> = {
-  connect: { title: 'Connect', note: 'pair + trust' },
-  receive: { title: 'Receive', note: 'desktop files' },
-  send: { title: 'Send', note: 'phone files' },
+const screenMap: Record<PhoneScreen, { title: string; note: string; icon: typeof Link2 }> = {
+  connect: { title: 'Connect', note: 'pair + trust', icon: Link2 },
+  receive: { title: 'Receive', note: 'desktop files', icon: Upload },
+  send: { title: 'Send', note: 'phone files', icon: SendHorizontal },
 };
 
 export default function App() {
@@ -24,7 +26,7 @@ export default function App() {
 
   const description = useMemo(() => {
     if (backend.loading) {
-      return 'Loading live sessions from the local DropBeam backend.';
+      return 'Loading live desktop sessions from the local backend.';
     }
 
     if (backend.error) {
@@ -32,30 +34,29 @@ export default function App() {
     }
 
     if (!activeSession) {
-      return 'Choose a session from the desktop and pair with its PIN.';
+      return 'Choose a desktop session and verify it with the live PIN.';
     }
 
     return activeSession.pairing.verifiedAt
-      ? `Connected to ${activeSession.localDevice.name} and ready to send or receive real files.`
-      : `Enter PIN ${activeSession.pairing.pin} to pair this phone with the desktop session.`;
+      ? `Connected to ${activeSession.localDevice.name}. The phone can now send and receive real files.`
+      : `Enter PIN ${activeSession.pairing.pin} to verify this phone against the current desktop session.`;
   }, [activeSession, backend.error, backend.loading]);
 
   return (
     <main className="phone-shell">
-      <div className="phone-shell__ambient phone-shell__ambient--one" />
-      <div className="phone-shell__ambient phone-shell__ambient--two" />
-
       <div className="phone-shell__frame">
         <GlassPanel className="phone-hero">
           <div className="phone-hero__top">
             <div className="phone-hero__copy">
-              <p className="phone-eyebrow">DropBeam Safari</p>
-              <h1>{activeSession ? 'Live phone transfer lane' : 'Pair to a desktop session'}</h1>
+              <p className="phone-eyebrow">DropBeam Phone</p>
+              <h1>Live transfer lane</h1>
               <p>{description}</p>
             </div>
 
             <div className="phone-hero__badges">
-              <Badge tone={backend.loading ? 'amber' : 'green'}>{backend.loading ? 'loading' : 'local backend'}</Badge>
+              <Badge tone={backend.loading ? 'amber' : 'green'}>
+                {backend.loading ? 'loading' : 'backend online'}
+              </Badge>
               <Badge tone="blue">{activeSession?.state ?? 'idle'}</Badge>
             </div>
           </div>
@@ -64,36 +65,43 @@ export default function App() {
             <article className="phone-summary-card">
               <span>Peer</span>
               <strong>{activeSession?.localDevice.name ?? 'No session selected'}</strong>
-              <p>Choose a desktop session and pair with its PIN.</p>
+              <p>Choose a desktop session before pairing.</p>
             </article>
             <article className="phone-summary-card">
               <span>Queue</span>
               <strong>{activeSession?.queue.totalFiles ?? 0}</strong>
-              <p>Real files uploaded by either side appear live.</p>
+              <p>Files move through the backend queue in real time.</p>
             </article>
             <article className="phone-summary-card">
               <span>Clipboard</span>
               <strong>{backend.clipboard?.sourceDeviceName ?? 'Idle'}</strong>
-              <p>{backend.clipboard?.updatedAt ? 'Shared text is ready across connected devices.' : 'Clipboard sync has not started yet.'}</p>
+              <p>{backend.clipboard?.updatedAt ? 'Shared text is available live.' : 'Clipboard sync has not run yet.'}</p>
             </article>
           </div>
 
           <nav className="phone-tabbar">
-            {(Object.keys(screenMap) as PhoneScreen[]).map((item) => (
-              <Button
-                key={item}
-                variant={screen === item ? 'primary' : 'ghost'}
-                className={`phone-tabbar__button${screen === item ? ' phone-tabbar__button--active' : ''}`}
-                onClick={() => {
-                  startTransition(() => {
-                    setScreen(item);
-                  });
-                }}
-              >
-                <span>{screenMap[item].title}</span>
-                <small>{screenMap[item].note}</small>
-              </Button>
-            ))}
+            {(Object.keys(screenMap) as PhoneScreen[]).map((item) => {
+              const Icon = screenMap[item].icon;
+
+              return (
+                <Button
+                  key={item}
+                  variant={screen === item ? 'primary' : 'ghost'}
+                  className="phone-tabbar__button"
+                  onClick={() => {
+                    startTransition(() => {
+                      setScreen(item);
+                    });
+                  }}
+                >
+                  <span>
+                    <Icon size={14} strokeWidth={2.2} />
+                    {screenMap[item].title}
+                  </span>
+                  <small>{screenMap[item].note}</small>
+                </Button>
+              );
+            })}
           </nav>
         </GlassPanel>
 
@@ -105,17 +113,17 @@ export default function App() {
           <div className="phone-footer-stat">
             <span>Sessions</span>
             <strong>{backend.health?.sessions ?? 0}</strong>
-            <p>All current desktop sessions exposed by the backend.</p>
+            <p>All live desktop sessions exposed by the backend.</p>
           </div>
           <div className="phone-footer-stat">
             <span>Pairing</span>
             <strong>{activeSession?.pairing.verifiedAt ? 'Verified' : 'Pending'}</strong>
-            <p>PIN-based pairing is now backed by live session state.</p>
+            <p>PIN verification uses the live session state.</p>
           </div>
           <div className="phone-footer-stat">
-            <span>Uploads in flight</span>
+            <span>Uploads</span>
             <strong>{backend.activeUploads.length}</strong>
-            <p>Chunked uploads report their progress here while files are moving.</p>
+            <p>Chunked uploads report their progress here.</p>
           </div>
         </GlassPanel>
 
@@ -123,18 +131,22 @@ export default function App() {
           <GlassPanel className="phone-install-card">
             <div>
               <p className="phone-panel__eyebrow">Install</p>
-              <h3>Add DropBeam to your home screen</h3>
+              <h3>Add DropBeam to the home screen</h3>
               <p>
                 {installPrompt.canInstall
-                  ? 'Install the web app for faster relaunches and a more native transfer flow.'
-                  : 'On iPhone Safari, tap Share, then choose Add to Home Screen to keep DropBeam one tap away.'}
+                  ? 'Install the web app for faster relaunches and a cleaner transfer flow.'
+                  : 'On iPhone Safari, use Share and then Add to Home Screen.'}
               </p>
             </div>
+
             {installPrompt.canInstall ? (
               <Button onClick={() => void installPrompt.install()} variant="secondary">
-                Install app
+                <Zap size={14} strokeWidth={2.2} />
+                Install
               </Button>
-            ) : null}
+            ) : (
+              <Badge tone="blue">Safari hint</Badge>
+            )}
           </GlassPanel>
         ) : null}
       </div>

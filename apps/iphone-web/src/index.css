@@ -4,11 +4,8 @@
 
 :root {
   color-scheme: dark;
-  font-family: "Aptos", "SF Pro Display", "Segoe UI Variable Display", "Trebuchet MS", sans-serif;
-  background:
-    radial-gradient(circle at top center, rgba(34, 211, 238, 0.16), transparent 26%),
-    radial-gradient(circle at 50% 120%, rgba(16, 185, 129, 0.12), transparent 30%),
-    #07101d;
+  font-family: var(--db-font);
+  background: #000000;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -27,12 +24,12 @@ body,
 
 body {
   min-height: 100vh;
-  color: #f8fbff;
+  color: var(--db-text);
+  font-family: var(--db-font);
   background:
-    linear-gradient(180deg, rgba(6, 9, 16, 0.68) 0%, rgba(5, 10, 19, 0.95) 100%),
-    radial-gradient(circle at top center, rgba(34, 211, 238, 0.16), transparent 25%),
-    radial-gradient(circle at bottom center, rgba(16, 185, 129, 0.12), transparent 28%),
-    #07101d;
+    radial-gradient(circle at top, rgba(255, 255, 255, 0.06), transparent 22%),
+    radial-gradient(circle at bottom, rgba(255, 255, 255, 0.05), transparent 20%),
+    #000000;
 }
 
 body::before {
@@ -40,25 +37,15 @@ body::before {
   position: fixed;
   inset: 0;
   pointer-events: none;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 25%),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px),
-    linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px);
-  background-size: auto, 36px 36px, 36px 36px;
-  opacity: 0.28;
-  mask-image: linear-gradient(180deg, black 30%, transparent 100%);
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+  background-size: 28px 28px;
+  opacity: 0.18;
+  mask-image: linear-gradient(180deg, black 0%, transparent 88%);
 }
 
 ::selection {
-  background: rgba(34, 211, 238, 0.32);
-}
-body::before {
-  content: '';
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  background-image:
-    radial-gradient(circle at 30% 0%, hsl(var(--primary) / 0.06), transparent 40%),
-    radial-gradient(circle at 70% 100%, hsl(var(--success) / 0.04), transparent 40%);
-  z-index: -1;
+  background: rgba(255, 255, 255, 0.28);
+  color: #000000;
 }

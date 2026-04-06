@@ -10,30 +10,27 @@ export function Receive({ backend }: { backend: DesktopBackendState }) {
   return (
     <div className="desktop-screen">
       <GlassPanel className="desktop-panel-stack">
-        <div className="desktop-panel-header">
-          <SectionHeading
-            eyebrow="Receive lane"
-            title="Phone uploads land here with real download links"
-            description="The iPhone send screen writes into the live backend, and the desktop can download the actual stored files here."
-          />
-          <Badge tone="blue">{files.length ? `${files.length} files` : 'inbox ready'}</Badge>
-        </div>
+        <SectionHeading
+          eyebrow="Receive"
+          title="Phone uploads waiting on desktop"
+          description="These files are stored in the live backend. Download individual files or rebuild the original directory structure with save-all."
+        />
 
         <div className="desktop-summary-strip">
           <article className="desktop-summary-card">
             <span>Delivery</span>
             <strong>Live download</strong>
-            <p>Incoming files are available immediately through the local transfer service.</p>
+            <p>Files are immediately downloadable through the backend once uploaded.</p>
           </article>
           <article className="desktop-summary-card">
-            <span>Transfers</span>
+            <span>Queue</span>
             <strong>{files.length}</strong>
-            <p>Phone-to-desktop items appear as soon as the phone uploads them.</p>
+            <p>Phone-to-desktop items appear here as soon as the phone uploads them.</p>
           </article>
           <article className="desktop-summary-card">
             <span>Folders preserved</span>
             <strong>{folderReady ? 'Yes' : 'Flat files'}</strong>
-            <p>Use save-all to rebuild nested folders when the sender uploaded a directory.</p>
+            <p>Use save-all to recreate nested folders when a directory was uploaded.</p>
           </article>
         </div>
 
@@ -51,27 +48,45 @@ export function Receive({ backend }: { backend: DesktopBackendState }) {
           </button>
         </div>
 
-        <div className="desktop-history-list">
-          {files.length ? (
-            files.map((file) => (
-              <article className="desktop-history-card" key={file.id}>
-                <div className="desktop-history-card__copy">
-                  <strong>{file.name}</strong>
-                  <p>
-                    {formatBytes(file.size)} - {file.sourceDeviceName ?? 'Phone'} - {file.relativePath && file.relativePath !== file.name ? 'folder structure preserved' : 'single file'}
-                  </p>
-                </div>
-                <a className="desktop-link-button" href={backend.downloadUrl(file.id)}>
-                  Download
-                </a>
-              </article>
-            ))
-          ) : (
-            <div className="desktop-empty-state">
-              <p>No phone uploads are available yet.</p>
-            </div>
-          )}
-        </div>
+        {files.length ? (
+          <div className="desktop-file-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>File</th>
+                  <th>Source</th>
+                  <th>Mode</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {files.map((file) => (
+                  <tr key={file.id}>
+                    <td>
+                      <div className="desktop-file-table__name">
+                        <strong>{file.name}</strong>
+                        <span>{formatBytes(file.size)}</span>
+                      </div>
+                    </td>
+                    <td>{file.sourceDeviceName ?? 'Phone'}</td>
+                    <td>
+                      {file.relativePath && file.relativePath !== file.name ? 'Folder preserved' : 'Single file'}
+                    </td>
+                    <td>
+                      <a className="desktop-link-button" href={backend.downloadUrl(file.id)}>
+                        Download
+                      </a>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="desktop-empty-state">
+            <p>No phone uploads are available yet.</p>
+          </div>
+        )}
       </GlassPanel>
     </div>
   );

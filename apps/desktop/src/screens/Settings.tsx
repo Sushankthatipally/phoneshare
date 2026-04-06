@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 
-import { Badge, Button, GlassPanel, SectionHeading } from '@dropbeam/shared-ui';
+import { MonitorCog } from 'lucide-react';
+
+import { Badge, Button, GlassPanel } from '@dropbeam/shared-ui';
 
 import type { DesktopBackendState } from '../features/dashboard/useDesktopBackend.js';
 
@@ -20,34 +22,76 @@ export function Settings({ backend }: { backend: DesktopBackendState }) {
   }, [backend.settings]);
 
   return (
-    <div className="desktop-screen">
-      <GlassPanel className="desktop-panel-stack">
-        <SectionHeading
-          eyebrow="Settings"
-          title="Local backend preferences"
-          description="Update the desktop identity and session defaults used across the live stack."
-        />
+    <section className="desktop-page">
+      <div className="desktop-grid desktop-grid--hero">
+        <GlassPanel className="desktop-card">
+          <div className="desktop-card__header">
+            <div>
+              <p className="desktop-card__eyebrow">Identity</p>
+              <h3>Desktop profile settings</h3>
+              <p>Keep the reference shell’s compact settings layout while editing live backend preferences.</p>
+            </div>
+            <MonitorCog size={18} strokeWidth={1.8} />
+          </div>
 
-        <div className="desktop-summary-strip">
-          <article className="desktop-summary-card">
-            <span>Preferred mode</span>
-            <strong>{backend.settings?.preferredMode ?? 'wifi'}</strong>
-            <p>New sessions inherit this mode preference.</p>
-          </article>
-          <article className="desktop-summary-card">
-            <span>Device icon</span>
-            <strong>{iconLabel(deviceIcon)}</strong>
-            <p>Shared with new sessions so phones can identify this desktop quickly.</p>
-          </article>
-          <article className="desktop-summary-card">
-            <span>Auto-close</span>
-            <strong>{autoCloseAfterDownload ? 'Enabled' : 'Disabled'}</strong>
-            <p>Completed sessions can close themselves after the last download finishes.</p>
-          </article>
+          <div className="desktop-stat-grid">
+            <article className="desktop-stat-card">
+              <span>Device name</span>
+              <strong>{backend.settings?.deviceName ?? 'Loading'}</strong>
+            </article>
+            <article className="desktop-stat-card">
+              <span>Preferred mode</span>
+              <strong>{backend.settings?.preferredMode ?? 'wifi'}</strong>
+            </article>
+            <article className="desktop-stat-card">
+              <span>Device icon</span>
+              <strong>{iconLabel(deviceIcon)}</strong>
+            </article>
+            <article className="desktop-stat-card">
+              <span>Auto-close</span>
+              <strong>{autoCloseAfterDownload ? 'Enabled' : 'Disabled'}</strong>
+            </article>
+          </div>
+        </GlassPanel>
+
+        <GlassPanel className="desktop-card">
+          <div className="desktop-card__header">
+            <div>
+              <p className="desktop-card__eyebrow">Live state</p>
+              <h3>Current backend configuration</h3>
+              <p>These values come from the backend dashboard and update after you save the form.</p>
+            </div>
+            <Badge tone="blue">{backend.settings?.updatedAt ?? 'No save yet'}</Badge>
+          </div>
+
+          <div className="desktop-spec-grid">
+            <article>
+              <span>Sessions</span>
+              <strong>{backend.health?.sessions ?? 0}</strong>
+            </article>
+            <article>
+              <span>Paired</span>
+              <strong>{backend.health?.pairedSessions ?? 0}</strong>
+            </article>
+            <article>
+              <span>Transferring</span>
+              <strong>{backend.health?.transferringSessions ?? 0}</strong>
+            </article>
+          </div>
+        </GlassPanel>
+      </div>
+
+      <GlassPanel className="desktop-card">
+        <div className="desktop-card__header">
+          <div>
+            <p className="desktop-card__eyebrow">Edit preferences</p>
+            <h3>Update new-session defaults</h3>
+            <p>These values are applied the next time the desktop creates a live session.</p>
+          </div>
         </div>
 
         <form
-          className="desktop-settings-form"
+          className="desktop-form"
           onSubmit={(event) => {
             event.preventDefault();
             void backend.updateSettings({
@@ -58,14 +102,19 @@ export function Settings({ backend }: { backend: DesktopBackendState }) {
             });
           }}
         >
-          <label className="desktop-field">
+          <label className="desktop-form-field">
             <span>Desktop name</span>
-            <input onChange={(event) => setDeviceName(event.target.value)} value={deviceName} />
+            <input
+              className="desktop-input"
+              onChange={(event) => setDeviceName(event.target.value)}
+              value={deviceName}
+            />
           </label>
 
-          <label className="desktop-field">
+          <label className="desktop-form-field">
             <span>Device icon</span>
             <select
+              className="desktop-input"
               onChange={(event) =>
                 setDeviceIcon(event.target.value as 'desktop' | 'laptop' | 'phone' | 'tablet')
               }
@@ -78,7 +127,7 @@ export function Settings({ backend }: { backend: DesktopBackendState }) {
             </select>
           </label>
 
-          <label className="desktop-field__checkbox">
+          <label className="desktop-checkbox">
             <input
               checked={autoCloseAfterDownload}
               onChange={(event) => setAutoCloseAfterDownload(event.target.checked)}
@@ -87,15 +136,15 @@ export function Settings({ backend }: { backend: DesktopBackendState }) {
             <span>Close sessions automatically after the final download</span>
           </label>
 
-          <div className="desktop-actions">
+          <div className="desktop-inline-actions">
             <Badge tone="blue">{backend.settings?.updatedAt ?? 'No settings saved yet'}</Badge>
             <Button disabled={backend.busy === 'update-settings'} type="submit">
-              {backend.busy === 'update-settings' ? 'Saving...' : 'Save settings'}
+              {backend.busy === 'update-settings' ? 'Saving' : 'Save settings'}
             </Button>
           </div>
         </form>
       </GlassPanel>
-    </div>
+    </section>
   );
 }
 
