@@ -14,8 +14,24 @@ export type DeviceIcon = 'desktop' | 'laptop' | 'phone' | 'tablet';
 
 export interface SessionTicket {
   sessionId: string;
-  pin: string;
   qrValue: string;
+  pairingUrl: string;
+  guestAllowed?: boolean;
+}
+
+export interface DiscoveryDeviceRecord {
+  id: string;
+  name: string;
+  icon: DeviceIcon;
+  platform: string;
+  host: string;
+  port: number;
+  serviceOrigin: string;
+  transport: TransferMode;
+  source: string;
+  seenAt: string;
+  expiresAt: string;
+  local: boolean;
 }
 
 export type LiveTransferDirection = 'desktop-to-phone' | 'phone-to-desktop';
@@ -34,6 +50,19 @@ export interface StoredFileRecord extends Omit<FileDescriptor, 'lastModified'> {
   lastModified?: number | null;
   averageBytesPerSecond?: number | null;
   durationMs?: number | null;
+}
+
+export interface SecureDownloadPayload {
+  ok: boolean;
+  file: StoredFileRecord;
+  encrypted: boolean;
+  keyId?: string;
+  algorithm?: string;
+  payload?: {
+    chunkIndex: number;
+    nonce: string;
+    ciphertext: string;
+  };
 }
 
 export interface UploadCheckpoint {
@@ -98,8 +127,9 @@ export interface LiveSessionRecord {
     icon?: DeviceIcon | null;
   } | null;
   pairing: {
-    pin: string;
     ticket: SessionTicket;
+    guestAllowed?: boolean;
+    encrypted?: boolean;
     verifiedAt?: string | null;
   };
   files: Record<LiveTransferDirection, StoredFileRecord[]>;
@@ -116,7 +146,6 @@ export interface HistoryEntry {
   createdAt: string;
   updatedAt: string;
   closedAt?: string | null;
-  pin: string;
   localDevice: {
     name: string;
     role: 'desktop';
@@ -132,6 +161,7 @@ export interface HistoryEntry {
   } | null;
   summary: LiveSessionSummary;
   fileCount: number;
+  files: StoredFileRecord[];
 }
 
 export interface BackendSettings {
@@ -139,6 +169,7 @@ export interface BackendSettings {
   deviceIcon: DeviceIcon;
   preferredMode: TransferMode;
   autoCloseAfterDownload: boolean;
+  guestModeEnabled: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -202,16 +233,19 @@ export interface CreateSessionRequest {
   deviceName?: string;
   deviceIcon?: DeviceIcon;
   origin?: string;
+  backendOrigin?: string;
+  guestModeEnabled?: boolean;
 }
 
 export interface PairSessionRequest {
-  pin: string;
   deviceName: string;
   deviceIcon?: DeviceIcon;
   kind?: DeviceKind;
   platform?: 'windows' | 'macos' | 'linux' | 'android' | 'ios';
   transport?: TransferMode;
   address?: string;
+  remotePublicKey?: string;
+  ticketQrValue?: string;
 }
 
 export interface UpdateSettingsRequest {
@@ -219,6 +253,7 @@ export interface UpdateSettingsRequest {
   deviceIcon?: DeviceIcon;
   preferredMode?: TransferMode;
   autoCloseAfterDownload?: boolean;
+  guestModeEnabled?: boolean;
 }
 
 export interface UpdateClipboardRequest {
@@ -272,4 +307,28 @@ export function inferTransferKind(fileName: string, mimeType: string) {
   }
 
   return 'document';
+}
+
+export function chooseTransferChunkSize(mode: TransferMode | undefined, size: number) {
+  const normalizedSize = Number.isFinite(size) && size > 0 ? size : 0;
+  const base =
+    mode === 'usb'
+      ? 4 * 1024 * 1024
+      : mode === 'hotspot'
+        ? 256 * 1024
+        : 1024 * 1024;
+
+  if (normalizedSize && normalizedSize <= 512 * 1024) {
+    return 64 * 1024;
+  }
+
+  if (normalizedSize && normalizedSize <= 4 * 1024 * 1024) {
+    return Math.min(base, 256 * 1024);
+  }
+
+  if (normalizedSize && normalizedSize <= 64 * 1024 * 1024) {
+    return Math.min(base, 512 * 1024);
+  }
+
+  return base;
 }

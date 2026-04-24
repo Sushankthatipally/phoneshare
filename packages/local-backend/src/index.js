@@ -7,6 +7,7 @@ import { createReadStream } from 'node:fs';
 import { pipeline } from 'node:stream/promises';
 
 import { resolveBackendConfig } from './config.js';
+import { BackendDiscoveryService } from './discovery.js';
 import { LocalBackendStore } from './store.js';
 
 const { dataDir, host, port } = resolveBackendConfig();
@@ -18,8 +19,15 @@ const store = new LocalBackendStore({
   dataDir,
   emit: (type, payload) => broadcast(type, payload),
 });
+const discovery = new BackendDiscoveryService({
+  deviceProvider: () => store.getLocalDiscoveryDevice(),
+  emit: (type, payload) => broadcast(type, payload),
+  host,
+  port,
+});
 
 await store.init();
+await discovery.start();
 
 const server = createServer(async (req, res) => {
   try {
@@ -120,9 +128,11 @@ async function handleRequest(req, res) {
 
   if (req.method === 'POST' && pathname === '/api/sessions') {
     const body = await readJson(req);
+    const advertiseHost = discovery.status().advertiseHost;
     const session = await store.createSession({
       ...body,
-      origin: body?.origin ?? origin,
+      origin: rewriteOriginHost(body?.origin ?? origin, advertiseHost),
+      backendOrigin: rewriteOriginHost(body?.backendOrigin ?? origin, advertiseHost),
     });
     sendJson(res, 201, {
       ok: true,
@@ -196,6 +206,15 @@ async function handleRequest(req, res) {
     }
   }
 
+  if (req.method === 'GET' && pathname === '/api/discovery') {
+    sendJson(res, 200, {
+      ok: true,
+      items: discovery.listPeers(),
+      status: discovery.status(),
+    });
+    return;
+  }
+
   if (req.method === 'GET' && pathname.startsWith('/api/files/') && pathname.endsWith('/download')) {
     const fileId = decodeURIComponent(pathname.split('/')[3]);
     const download = await store.downloadFile(fileId);
@@ -207,6 +226,17 @@ async function handleRequest(req, res) {
     });
     const stream = createReadStream(download.path);
     await pipeline(stream, res);
+    return;
+  }
+
+  if (req.method === 'GET' && pathname.startsWith('/api/files/') && pathname.endsWith('/payload')) {
+    const fileId = decodeURIComponent(pathname.split('/')[3]);
+    const sessionId = searchParams.get('sessionId') ?? '';
+    const payload = await store.downloadSecureFile(fileId, sessionId);
+    sendJson(res, 200, {
+      ok: true,
+      ...payload,
+    });
     return;
   }
 
@@ -370,4 +400,20 @@ function escapeHeaderValue(value) {
 
 function randomUUID() {
   return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function rewriteOriginHost(value, hostOverride) {
+  if (!hostOverride) {
+    return value;
+  }
+
+  try {
+    const url = new URL(String(value));
+    if (url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '0.0.0.0') {
+      url.hostname = hostOverride;
+    }
+    return url.toString().replace(/\/+$/, '');
+  } catch {
+    return value;
+  }
 }

@@ -14,9 +14,6 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
-  "dependencies": {
-    "@dropbeam/protocol": "workspace:*"
-  },
   "devDependencies": {
     "typescript": "latest"
   }

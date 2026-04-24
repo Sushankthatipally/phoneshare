@@ -1,13 +1,22 @@
-import type { PairingPayload } from '@dropbeam/protocol';
-
 const AES_NONCE_BYTES = 12;
 const AES_GCM_ALGORITHM = 'AES-GCM';
 const X25519_ALGORITHM = { name: 'X25519' } as const;
 
+export type PairingTransport = 'usb' | 'wifi';
+
+export interface PairingPayload {
+  sessionId: string;
+  transport: PairingTransport;
+  host: string;
+  port: number;
+  publicKey: string;
+  expiresAt: string;
+}
+
 export interface PairingSeed {
   host: string;
   port: number;
-  transport: PairingPayload['transport'];
+  transport: PairingTransport;
   publicKey: string;
   sessionId?: string;
   ttlMs?: number;
@@ -187,6 +196,34 @@ export async function decryptChunk(input: {
   );
 
   return new Uint8Array(plaintext);
+}
+
+export async function importSessionKey(input: {
+  rawKey: Uint8Array;
+  publicKey?: string;
+  keyId?: string;
+}): Promise<SessionKeyMaterial> {
+  const subtle = requireSubtleCrypto();
+  const rawKey = Uint8Array.from(input.rawKey);
+  const digest = new Uint8Array(await subtle.digest('SHA-256', rawKey));
+  const cryptoKey = await subtle.importKey(
+    'raw',
+    toBufferSource(rawKey),
+    {
+      name: AES_GCM_ALGORITHM,
+      length: 256,
+    } as unknown as AlgorithmIdentifier,
+    false,
+    ['encrypt', 'decrypt'],
+  );
+
+  return {
+    algorithm: 'x25519-hkdf-sha256/aes-256-gcm',
+    keyId: input.keyId ?? toHex(digest.slice(0, 8)),
+    publicKey: input.publicKey ?? '',
+    cryptoKey,
+    rawKey,
+  };
 }
 
 async function hkdfSha256(

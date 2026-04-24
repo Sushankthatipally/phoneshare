@@ -7,6 +7,7 @@ import {
   type BackendSettings,
   type ClipboardState,
   type DashboardResponse,
+  type DiscoveryDeviceRecord,
   type HistoryEntry,
   type LiveSessionRecord,
   type UploadSessionRecord,
@@ -15,7 +16,7 @@ import {
 
 const client = new DropbeamBackendClient(resolveBackendOrigin(import.meta.env.VITE_DROPBEAM_API));
 
-function resolvePhoneOrigin() {
+function resolvePhoneOrigin(hostnameOverride?: string | null) {
   if (typeof window === 'undefined') {
     return 'http://localhost:5174';
   }
@@ -24,7 +25,8 @@ function resolvePhoneOrigin() {
     return import.meta.env.VITE_DROPBEAM_PHONE_ORIGIN;
   }
 
-  return `${window.location.protocol}//${window.location.hostname}:5174`;
+  const hostname = hostnameOverride || window.location.hostname || 'localhost';
+  return `${window.location.protocol}//${hostname}:5174`;
 }
 
 export function useDesktopBackend() {
@@ -32,23 +34,26 @@ export function useDesktopBackend() {
   const [dashboard, setDashboard] = useState<DashboardResponse | null>(null);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [sessions, setSessions] = useState<LiveSessionRecord[]>([]);
+  const [devices, setDevices] = useState<DiscoveryDeviceRecord[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
-    const [nextHealth, nextDashboard, nextHistory, nextSessions] = await Promise.all([
+    const [nextHealth, nextDashboard, nextHistory, nextSessions, nextDevices] = await Promise.all([
       client.health(),
       client.dashboard(),
       client.history(),
       client.sessions(),
+      client.discovery(),
     ]);
 
     setHealth(nextHealth);
     setDashboard(nextDashboard);
     setHistory(nextHistory);
     setSessions(nextSessions);
+    setDevices(nextDevices);
     setSelectedSessionId((current) => {
       if (current && nextSessions.some((session) => session.id === current)) {
         return current;
@@ -117,24 +122,27 @@ export function useDesktopBackend() {
     setError(null);
 
     try {
-      await client.createSession({
+      const lanHost = devices.find((device) => device.local)?.host ?? null;
+      const session = await client.createSession({
         mode: settings?.preferredMode,
         deviceName: settings?.deviceName,
         deviceIcon: settings?.deviceIcon,
-        origin: resolvePhoneOrigin(),
+        origin: resolvePhoneOrigin(lanHost),
+        backendOrigin: replaceOriginHostname(resolveBackendOrigin(import.meta.env.VITE_DROPBEAM_API), lanHost),
       });
+      setSelectedSessionId(session.id);
       await refresh();
     } catch (createError) {
       setError(createError instanceof Error ? createError.message : 'Failed to create session');
     } finally {
       setBusy(null);
     }
-  }, [refresh, settings?.deviceIcon, settings?.deviceName, settings?.preferredMode]);
+  }, [devices, refresh, settings?.deviceIcon, settings?.deviceName, settings?.preferredMode]);
 
   const uploadFiles = useCallback(
     async (files: FileList | File[]) => {
       if (!activeSession) {
-        setError('Create and pair a session before uploading desktop files.');
+        setError('Create and connect a session before uploading desktop files.');
         return;
       }
 
@@ -150,6 +158,7 @@ export function useDesktopBackend() {
             {
               deviceName: settings?.deviceName ?? 'DropBeam Desktop',
               relativePath: getRelativePath(file),
+              transferMode: activeSession.mode,
             },
           );
         }
@@ -204,6 +213,7 @@ export function useDesktopBackend() {
     busy,
     clipboard,
     dashboard,
+    devices,
     error,
     health,
     history,
@@ -214,6 +224,7 @@ export function useDesktopBackend() {
     closeSession,
     createSession,
     downloadUrl: client.downloadUrl.bind(client),
+    downloadFile: client.downloadFile.bind(client),
     refresh,
     setSelectedSessionId,
     updateSettings,
@@ -243,4 +254,20 @@ export type DesktopBackendState = ReturnType<typeof useDesktopBackend>;
 function getRelativePath(file: File) {
   const candidate = (file as File & { webkitRelativePath?: string }).webkitRelativePath;
   return candidate?.trim() ? candidate : undefined;
+}
+
+function replaceOriginHostname(origin: string, hostnameOverride?: string | null) {
+  if (!hostnameOverride) {
+    return origin;
+  }
+
+  try {
+    const url = new URL(origin);
+    if (url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '0.0.0.0') {
+      url.hostname = hostnameOverride;
+    }
+    return url.toString().replace(/\/+$/, '');
+  } catch {
+    return origin;
+  }
 }

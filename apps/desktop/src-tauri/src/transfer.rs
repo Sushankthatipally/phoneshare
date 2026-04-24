@@ -18,8 +18,10 @@ use uuid::Uuid;
 
 use crate::crypto::{
     build_pairing_payload, decrypt_chunk, derive_session_key, encrypt_chunk, export_public_key, generate_key_agreement,
-    random_pin, EncryptedChunk, KeyAgreement, PairingPayload, SessionKey,
+    EncryptedChunk, KeyAgreement, PairingPayload, SessionKey,
 };
+use crate::pairing::{build_pairing_details, mark_pairing_verified};
+use crate::qr::serialize_pairing_payload;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -199,7 +201,7 @@ pub struct PairingVerifyRequest {
     pub session_id: String,
     pub remote_device: DeviceIdentity,
     pub remote_public_key: String,
-    pub pin: String,
+    pub pin: Option<String>,
     pub address: Option<String>,
     pub port: Option<u16>,
 }
@@ -247,14 +249,11 @@ impl TransferCoordinator {
             state: SessionState::Pairing,
             local_device: request.local_device,
             remote_device: None,
-            pairing: PairingDetails {
-                state: PairingState::PinRequired,
-                session_id: payload.session_id.clone(),
-                expires_at: payload.expires_at.clone(),
-                pin: Some(random_pin()),
-                qr_payload: Some(serde_json::to_string(&payload).context("failed to serialize pairing payload")?),
-                verified_at: None,
-            },
+            pairing: build_pairing_details(
+                payload.session_id.clone(),
+                payload.expires_at.clone(),
+                serialize_pairing_payload(&payload)?,
+            ),
             peer: None,
             created_at: created_at.clone(),
             updated_at: created_at,
@@ -284,14 +283,6 @@ impl TransferCoordinator {
             .get_mut(&request.session_id)
             .with_context(|| format!("session {} does not exist", request.session_id))?;
 
-        if tracked.session.pairing.pin.as_deref() != Some(request.pin.as_str()) {
-            tracked.session.pairing.state = PairingState::Rejected;
-            tracked.session.state = SessionState::Failed;
-            tracked.session.last_error = Some("pairing PIN did not match".to_string());
-            tracked.session.updated_at = timestamp();
-            bail!("pairing PIN did not match");
-        }
-
         let session_key = derive_session_key(&tracked.local_keys, &request.remote_public_key, &request.session_id)?;
         tracked.session_key = Some(session_key);
         tracked.session.remote_device = Some(request.remote_device.clone());
@@ -302,8 +293,7 @@ impl TransferCoordinator {
             port: request.port,
         });
         tracked.session.state = SessionState::Paired;
-        tracked.session.pairing.state = PairingState::Verified;
-        tracked.session.pairing.verified_at = Some(timestamp());
+        mark_pairing_verified(&mut tracked.session.pairing);
         tracked.session.updated_at = timestamp();
 
         Ok(tracked.session.clone())
@@ -328,10 +318,8 @@ impl TransferCoordinator {
     }
 
     pub async fn session_summary(&self, session_id: &str) -> Result<SessionSummary> {
-        let session = self
-            .sessions
-            .read()
-            .await
+        let sessions = self.sessions.read().await;
+        let session = sessions
             .get(session_id)
             .with_context(|| format!("session {session_id} not found"))?;
         let progress = aggregate_progress(&session.queue);

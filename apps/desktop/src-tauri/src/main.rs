@@ -1,9 +1,11 @@
 mod crypto;
 mod mdns;
+mod pairing;
+mod qr;
+mod server;
 mod transfer;
 mod usb_android;
 mod usb_ios;
-mod web_server;
 
 use std::{
     env,
@@ -12,22 +14,26 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use server::{run_backend, BackendConfig};
 use transfer::{DeviceIdentity, DeviceKind};
-use web_server::{run_backend, BackendConfig};
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() {
     install_tracing();
 
-    let config = build_config()?;
-    tracing::info!(
-        device = %config.local_device.name,
-        bind_host = %config.bind_host,
-        port = config.port,
-        "starting dropbeam backend runtime"
-    );
+    tauri::Builder::default()
+        .setup(|_app| {
+            let config = build_config().map_err(|error| std::io::Error::other(error.to_string()))?;
 
-    run_backend(config).await
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = run_backend(config).await {
+                    tracing::error!("dropbeam backend terminated: {error}");
+                }
+            });
+
+            Ok(())
+        })
+        .run(tauri::generate_context!())
+        .expect("failed to run DropBeam desktop");
 }
 
 fn install_tracing() {

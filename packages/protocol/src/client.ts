@@ -4,16 +4,27 @@ import type {
   BackendSettings,
   ClipboardState,
   CreateSessionRequest,
+  DiscoveryDeviceRecord,
   DashboardResponse,
   HistoryEntry,
   LiveSessionRecord,
   LiveTransferDirection,
   PairSessionRequest,
+  SecureDownloadPayload,
   StoredFileRecord,
   UpdateClipboardRequest,
   UpdateSettingsRequest,
   UploadSessionRecord,
 } from './live-backend.js';
+import { chooseTransferChunkSize } from './live-backend.js';
+import {
+  decryptChunk,
+  deriveSessionKey,
+  encryptChunk,
+  generateKeyAgreement,
+  importSessionKey,
+  type SessionKeyMaterial,
+} from './native-crypto.js';
 
 interface OkEnvelope<T> {
   ok: boolean;
@@ -43,6 +54,10 @@ export class DropbeamBackendClient {
 
   settings() {
     return this.request<{ settings: BackendSettings }>('/api/settings').then((response) => response.settings);
+  }
+
+  discovery() {
+    return this.request<{ items: DiscoveryDeviceRecord[] }>('/api/discovery').then((response) => response.items);
   }
 
   clipboard() {
@@ -84,14 +99,48 @@ export class DropbeamBackendClient {
   }
 
   pairSession(sessionId: string, input: PairSessionRequest) {
-    return this.request<{ session: LiveSessionRecord }>(
+    return this.pairSessionSecure(sessionId, input);
+  }
+
+  private async pairSessionSecure(sessionId: string, input: PairSessionRequest) {
+    const ticket = parseTicketValue(input.ticketQrValue);
+    let sessionKey: SessionKeyMaterial | null = null;
+    let remotePublicKey: string | undefined;
+
+    if (ticket?.publicKey && !isExpired(ticket.expiresAt) && ticket.sessionId === sessionId) {
+      const keyAgreement = await generateKeyAgreement();
+      sessionKey = await deriveSessionKey({
+        keyAgreement,
+        remotePublicKey: ticket.publicKey,
+        sessionId,
+      });
+      remotePublicKey = keyAgreement.publicKey;
+    }
+
+    try {
+      const session = await this.request<{ session: LiveSessionRecord }>(
       `/api/sessions/${encodeURIComponent(sessionId)}/pair`,
       {
         method: 'POST',
-        body: JSON.stringify(input),
+        body: JSON.stringify({
+          ...input,
+          remotePublicKey,
+        }),
         headers: { 'Content-Type': 'application/json' },
       },
-    ).then((response) => response.session);
+      ).then((response) => response.session);
+
+      if (sessionKey) {
+        persistSessionKey(sessionId, sessionKey);
+      }
+
+      return session;
+    } catch (error) {
+      if (sessionKey) {
+        clearPersistedSessionKey(sessionId);
+      }
+      throw error;
+    }
   }
 
   closeSession(sessionId: string, reason?: string) {
@@ -117,10 +166,11 @@ export class DropbeamBackendClient {
     options: {
       deviceName: string;
       relativePath?: string;
+      transferMode?: LiveSessionRecord['mode'];
     },
     onProgress?: (progress: number) => void,
   ) {
-    const chunkSize = chooseChunkSize(file.size);
+    const chunkSize = chooseTransferChunkSize(options.transferMode, file.size);
     const totalChunks = Math.max(1, Math.ceil(file.size / chunkSize));
     const upload = await this.request<{ upload: UploadSessionRecord }>(
       `/api/sessions/${encodeURIComponent(sessionId)}/uploads/start`,
@@ -141,17 +191,34 @@ export class DropbeamBackendClient {
       },
     ).then((response) => response.upload);
 
+    const sessionKey = await loadSessionKey(sessionId);
+
     for (let chunkIndex = upload.nextChunk; chunkIndex < upload.totalChunks; chunkIndex += 1) {
       const start = chunkIndex * upload.chunkSize;
       const end = Math.min(file.size, start + upload.chunkSize);
+      const body = sessionKey
+        ? JSON.stringify({
+            encrypted: true,
+            algorithm: sessionKey.algorithm,
+            keyId: sessionKey.keyId,
+            fileId: upload.id,
+            chunk: await encryptChunk({
+              sessionKey,
+              sessionId,
+              fileId: upload.id,
+              chunkIndex,
+              plaintext: new Uint8Array(await file.slice(start, end).arrayBuffer()),
+            }),
+          })
+        : file.slice(start, end);
       const response = await fetch(
         `${this.origin}/api/uploads/${encodeURIComponent(upload.id)}/chunks/${chunkIndex}`,
         {
           method: 'PUT',
           headers: {
-            'Content-Type': file.type || 'application/octet-stream',
+            'Content-Type': sessionKey ? 'application/json' : file.type || 'application/octet-stream',
           },
-          body: file.slice(start, end),
+          body,
         },
       );
 
@@ -168,6 +235,36 @@ export class DropbeamBackendClient {
 
   downloadUrl(fileId: string) {
     return `${this.origin}/api/files/${encodeURIComponent(fileId)}/download`;
+  }
+
+  async downloadFile(sessionId: string, file: StoredFileRecord) {
+    const sessionKey = await loadSessionKey(sessionId);
+    if (!sessionKey) {
+      return fetch(this.downloadUrl(file.id)).then((response) => response.blob());
+    }
+
+    const response = await fetch(
+      `${this.origin}/api/files/${encodeURIComponent(file.id)}/payload?sessionId=${encodeURIComponent(sessionId)}`,
+    );
+    const payload = await this.readJson<SecureDownloadPayload>(response);
+
+    if (!payload.encrypted || !payload.payload) {
+      return fetch(this.downloadUrl(file.id)).then((downloadResponse) => downloadResponse.blob());
+    }
+
+    const plaintext = await decryptChunk({
+      sessionKey,
+      sessionId,
+      fileId: file.id,
+      chunk: payload.payload,
+    });
+
+    return new Blob([Uint8Array.from(plaintext).buffer], { type: file.mimeType || 'application/octet-stream' });
+  }
+
+  async downloadFileUrl(sessionId: string, file: StoredFileRecord) {
+    const blob = await this.downloadFile(sessionId, file);
+    return URL.createObjectURL(blob);
   }
 
   subscribe(onEvent: (event: BackendEventEnvelope) => void) {
@@ -228,14 +325,129 @@ export function resolveBackendOrigin(override?: string) {
   return 'http://127.0.0.1:17619';
 }
 
-function chooseChunkSize(size: number) {
-  if (size >= 1024 * 1024 * 1024) {
-    return 4 * 1024 * 1024;
+type StoredSessionKey = {
+  keyId: string;
+  publicKey: string;
+  rawKey: string;
+};
+
+type TicketPayload = {
+  sessionId: string;
+  publicKey: string;
+  expiresAt: string;
+};
+
+const sessionKeyCache = new Map<string, SessionKeyMaterial>();
+
+async function loadSessionKey(sessionId: string) {
+  const cached = sessionKeyCache.get(sessionId);
+  if (cached) {
+    return cached;
   }
 
-  if (size >= 128 * 1024 * 1024) {
-    return 2 * 1024 * 1024;
+  if (typeof window === 'undefined' || !window.sessionStorage) {
+    return null;
   }
 
-  return 512 * 1024;
+  const raw = window.sessionStorage.getItem(storageKey(sessionId));
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as StoredSessionKey;
+    const imported = await importSessionKey({
+      rawKey: decodeBase64Url(parsed.rawKey),
+      publicKey: parsed.publicKey,
+      keyId: parsed.keyId,
+    });
+    sessionKeyCache.set(sessionId, imported);
+    return imported;
+  } catch {
+    clearPersistedSessionKey(sessionId);
+    return null;
+  }
+}
+
+function persistSessionKey(sessionId: string, sessionKey: SessionKeyMaterial) {
+  sessionKeyCache.set(sessionId, sessionKey);
+
+  if (typeof window === 'undefined' || !window.sessionStorage) {
+    return;
+  }
+
+  const payload: StoredSessionKey = {
+    keyId: sessionKey.keyId,
+    publicKey: sessionKey.publicKey,
+    rawKey: encodeBase64Url(sessionKey.rawKey),
+  };
+
+  window.sessionStorage.setItem(storageKey(sessionId), JSON.stringify(payload));
+}
+
+function clearPersistedSessionKey(sessionId: string) {
+  sessionKeyCache.delete(sessionId);
+  if (typeof window !== 'undefined' && window.sessionStorage) {
+    window.sessionStorage.removeItem(storageKey(sessionId));
+  }
+}
+
+function storageKey(sessionId: string) {
+  return `dropbeam-session-key:${sessionId}`;
+}
+
+function parseTicketValue(value?: string) {
+  if (!value) {
+    return null;
+  }
+
+  try {
+    const url = new URL(value);
+    const encoded = url.hash.startsWith('#pair=') ? url.hash.slice('#pair='.length) : null;
+    if (encoded) {
+      return JSON.parse(decodeURIComponent(encoded)) as TicketPayload;
+    }
+  } catch {
+    // Fall through to support direct JSON payloads.
+  }
+
+  try {
+    return JSON.parse(value) as TicketPayload;
+  } catch {
+    return null;
+  }
+}
+
+function isExpired(expiresAt?: string) {
+  if (!expiresAt) {
+    return false;
+  }
+
+  const timestamp = Date.parse(expiresAt);
+  return Number.isFinite(timestamp) ? timestamp <= Date.now() : false;
+}
+
+function encodeBase64Url(bytes: Uint8Array) {
+  let binary = '';
+  for (let index = 0; index < bytes.length; index += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
+  }
+
+  return btoa(binary)
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '');
+}
+
+function decodeBase64Url(value: string) {
+  const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
+  const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4);
+  const binary = atob(padded);
+  const bytes = new Uint8Array(binary.length);
+
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+
+  return bytes;
 }

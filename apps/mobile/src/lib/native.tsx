@@ -1,18 +1,20 @@
-import type { ButtonHTMLAttributes, CSSProperties, InputHTMLAttributes, ReactNode } from 'react';
+import type { CSSProperties, PropsWithChildren, ReactNode } from 'react';
 
-export function View({ children, style }: { children?: ReactNode; style?: CSSProperties; key?: any }) {
+type NativeStyle = CSSProperties;
+
+export function View({ children, style }: PropsWithChildren<{ style?: NativeStyle }>) {
   return <div style={style}>{children}</div>;
 }
 
-export function Text({ children, style }: { children?: ReactNode; style?: CSSProperties; key?: any }) {
+export function Text({ children, style }: PropsWithChildren<{ style?: NativeStyle }>) {
   return <div style={style}>{children}</div>;
 }
 
-export function ScrollView({ children, style }: { children?: ReactNode; style?: CSSProperties; key?: any }) {
+export function ScrollView({ children, style }: PropsWithChildren<{ style?: NativeStyle }>) {
   return <div style={{ overflowY: 'auto', ...style }}>{children}</div>;
 }
 
-export function SafeAreaView({ children, style }: { children?: ReactNode; style?: CSSProperties; key?: any }) {
+export function SafeAreaView({ children, style }: PropsWithChildren<{ style?: NativeStyle }>) {
   return <div style={style}>{children}</div>;
 }
 
@@ -21,23 +23,16 @@ export function Pressable({
   style,
   onPress,
   disabled,
-  key,
-}: {
-  children?: ReactNode;
-  style?: CSSProperties;
-  onPress?: () => void;
-  disabled?: boolean;
-  key?: any;
-}) {
+}: PropsWithChildren<{ style?: NativeStyle; onPress?: () => void; disabled?: boolean }>) {
   return (
     <button
       disabled={disabled}
       onClick={onPress}
       style={{
-        cursor: disabled ? 'not-allowed' : 'pointer',
         background: 'transparent',
         border: 0,
         color: 'inherit',
+        cursor: disabled ? 'not-allowed' : 'pointer',
         padding: 0,
         ...style,
       }}
@@ -53,17 +48,15 @@ export function TextInput({
   onChangeText,
   value,
   placeholder,
-  key,
 }: {
-  style?: CSSProperties;
+  style?: NativeStyle;
   onChangeText?: (value: string) => void;
   value: string;
   placeholder?: string;
-  key?: any;
 }) {
   return (
     <input
-      onChange={(event: any) => onChangeText?.(event.target.value)}
+      onChange={(event) => onChangeText?.(event.target.value)}
       placeholder={placeholder}
       style={{
         backgroundColor: '#0a1320',
@@ -84,19 +77,18 @@ export function Button({
   children,
   style,
   onPress,
+  onClick,
   disabled,
-  key,
-}: {
-  children?: ReactNode;
-  style?: CSSProperties;
+}: PropsWithChildren<{
+  style?: NativeStyle;
   onPress?: () => void;
+  onClick?: () => void;
   disabled?: boolean;
-  key?: any;
-}) {
+}>) {
   return (
     <button
       disabled={disabled}
-      onClick={onPress}
+      onClick={onPress ?? onClick}
       style={{
         backgroundColor: disabled ? '#223448' : '#3aa9ff',
         border: '1px solid transparent',
@@ -114,4 +106,8 @@ export function Button({
       {children}
     </button>
   );
+}
+
+export function Spacer({ size = 16 }: { size?: number }) {
+  return <div style={{ height: size }} />;
 }

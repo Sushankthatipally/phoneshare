@@ -1,78 +1,70 @@
-import { Badge, GlassPanel } from '@dropbeam/shared-ui';
-import { formatBytes } from '@dropbeam/protocol';
-
+import { ScreenCard } from '../components/ScreenCard.js';
 import { Button, Text, View } from '../lib/native.js';
 import type { ReturnTypeOfUseMobileBackend } from './types.js';
 
 export function ReceiveScreen({ backend }: { backend: ReturnTypeOfUseMobileBackend }) {
-  const files = backend.activeSession?.files['desktop-to-phone'] ?? [];
-  const openDownload = (fileId: string) => {
-    const url = backend.downloadUrl(fileId);
-    if (typeof window !== 'undefined' && typeof window.open === 'function') {
-      window.open(url, '_blank', 'noopener,noreferrer');
-    }
-  };
-
   return (
-    <GlassPanel>
-      <View style={{ display: 'grid', gap: 12 }}>
-        <View style={styles.row}>
-          <Text style={styles.title}>Receive</Text>
-          <Badge tone="blue">{files.length ? `${files.length} files` : 'waiting'}</Badge>
+    <View style={{ display: 'grid', gap: 14 }}>
+      <ScreenCard
+        eyebrow="Incoming"
+        title="Approve desktop files"
+        copy="The receive lane keeps the approval surface visible without needing a browser fallback."
+      >
+        <View style={styles.actionGrid}>
+          <Button onPress={() => backend.markHistory('Receipt scan.pdf', 780_000, 'desktop-to-phone', 'wifi')}>
+            Approve sample
+          </Button>
+          <Button onPress={() => backend.selectConnectionMode('hotspot')}>Use hotspot link</Button>
         </View>
-        <Text style={styles.copy}>Desktop uploads show up here as live session state changes.</Text>
+      </ScreenCard>
 
-        <View style={styles.list}>
-          {files.length ? (
-            files.map((file) => (
-              <View key={file.id} style={styles.card}>
-                <Text style={styles.name}>{file.name}</Text>
-                <Text style={styles.meta}>{formatBytes(file.size)}</Text>
-                <Button onPress={() => openDownload(file.id)}>Download</Button>
-              </View>
-            ))
-          ) : (
-            <Text style={styles.copy}>No desktop files are ready for this phone yet.</Text>
-          )}
+      <ScreenCard eyebrow="Pending" title="Waiting for approvals" copy="Incoming transfer cards will land here once the native transport module is connected.">
+        <View style={styles.jobList}>
+          <View style={styles.jobCard}>
+            <Text style={styles.jobName}>Shared design assets</Text>
+            <Text style={styles.jobMeta}>12.4 MB · wifi · queued for approval</Text>
+            <Text style={styles.copy}>The native receive flow will show trust, progress, and save location here.</Text>
+          </View>
+          <View style={styles.jobCard}>
+            <Text style={styles.jobName}>Recording clip.mp4</Text>
+            <Text style={styles.jobMeta}>84.2 MB · hotspot · waiting on host</Text>
+            <Text style={styles.copy}>Hotspot mode is scaffolded for the Android path and should share the same wire contract.</Text>
+          </View>
         </View>
-      </View>
-    </GlassPanel>
+      </ScreenCard>
+    </View>
   );
 }
 
 const styles = {
-  row: {
-    display: 'flex',
-    gap: 8,
-    alignItems: 'center',
-    justifyContent: 'space-between',
+  actionGrid: {
+    display: 'grid',
+    gap: 10,
+    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
   },
-  title: {
-    color: '#f2f7ff',
-    fontSize: 22,
-    fontWeight: 800,
-  },
-  copy: {
-    color: '#a9bfd3',
-    lineHeight: 1.5,
-  },
-  list: {
+  jobList: {
     display: 'grid',
     gap: 10,
   },
-  card: {
+  jobCard: {
     backgroundColor: '#0c1625',
     border: '1px solid #1e2f44',
     borderRadius: 18,
     display: 'grid',
-    gap: 8,
+    gap: 6,
     padding: 12,
   },
-  name: {
+  jobName: {
     color: '#eef6ff',
+    fontSize: 15,
     fontWeight: 700,
   },
-  meta: {
+  jobMeta: {
     color: '#99b4c9',
+    lineHeight: 1.4,
+  },
+  copy: {
+    color: '#a9bfd3',
+    lineHeight: 1.5,
   },
 };

@@ -5,9 +5,8 @@
   "packageManager": "pnpm@10.27.0",
   "scripts": {
     "build": "turbo run build",
-    "dev": "turbo run dev --filter=@dropbeam/local-backend --filter=@dropbeam/desktop --filter=@dropbeam/iphone-web",
+    "dev": "turbo run dev --filter=@dropbeam/local-backend --filter=@dropbeam/desktop --filter=@dropbeam/mobile",
     "dev:desktop": "pnpm --filter @dropbeam/desktop dev",
-    "dev:iphone": "pnpm --filter @dropbeam/iphone-web dev",
     "dev:mobile": "pnpm --filter @dropbeam/mobile dev",
     "typecheck": "turbo run typecheck"
   },

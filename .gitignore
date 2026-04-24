@@ -1,6 +1,8 @@
 node_modules/
 .pnpm-store/
 dist/
+target/
+target-tauri/
 .turbo/
 .vite/
 coverage/
@@ -17,6 +19,7 @@ yarn-error.log*
 .codex-temp/
 packages/local-backend/data/
 apps/mobile/.expo/
+apps/*/src-tauri/gen/
 *.log
 *.pid
 

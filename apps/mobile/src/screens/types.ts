@@ -1,3 +1,1 @@
-import type { useMobileBackend } from '../hooks/useMobileBackend.js';
-
-export type ReturnTypeOfUseMobileBackend = ReturnType<typeof useMobileBackend>;
+export type { MobileBackendState as ReturnTypeOfUseMobileBackend } from '../hooks/useMobileBackend.js';

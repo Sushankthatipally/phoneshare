@@ -9,10 +9,29 @@
     ],
     "module": "ESNext",
     "moduleResolution": "Bundler",
+    "baseUrl": ".",
+    "paths": {
+      "@dropbeam/crypto-core": [
+        "packages/crypto-core/src/index.ts"
+      ],
+      "@dropbeam/crypto-core/*": [
+        "packages/crypto-core/src/*"
+      ],
+      "@dropbeam/protocol": [
+        "packages/protocol/src/index.ts"
+      ],
+      "@dropbeam/protocol/*": [
+        "packages/protocol/src/*"
+      ],
+      "@dropbeam/shared-ui": [
+        "packages/shared-ui/src/index.ts"
+      ]
+    },
     "allowJs": false,
     "skipLibCheck": true,
     "strict": true,
     "noEmit": true,
+    "ignoreDeprecations": "5.0",
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
     "forceConsistentCasingInFileNames": true,

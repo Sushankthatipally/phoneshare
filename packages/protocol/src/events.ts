@@ -60,7 +60,6 @@ export interface SessionUpdatedEvent extends SessionEventBase {
 export interface PairingUpdatedEvent extends SessionEventBase {
   type: 'pairing-updated';
   pairingState: PairingState;
-  pin?: string;
 }
 
 export interface ManifestReadyEvent extends SessionEventBase {
@@ -111,4 +110,3 @@ export type TransferEvent =
   | ChunkEvent
   | TransferCompleteEvent
   | TransferFailedEvent;
-

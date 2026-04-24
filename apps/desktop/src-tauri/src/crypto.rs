@@ -27,10 +27,19 @@ pub struct PairingPayload {
     pub expires_at: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct KeyAgreement {
     secret_key: StaticSecret,
     pub public_key: PublicKey,
+}
+
+impl std::fmt::Debug for KeyAgreement {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KeyAgreement")
+            .field("secret_key", &"<redacted>")
+            .field("public_key", &export_public_key(&self.public_key))
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -97,11 +106,6 @@ pub fn build_pairing_payload(
     }
 }
 
-pub fn random_pin() -> String {
-    let mut rng = OsRng;
-    format!("{:06}", rng.next_u32() % 1_000_000)
-}
-
 pub fn parse_pairing_expiry(payload: &PairingPayload) -> Result<DateTime<Utc>> {
     payload
         .expires_at
@@ -153,7 +157,7 @@ pub fn encrypt_chunk(
                 aad: aad.as_bytes(),
             },
         )
-        .context("failed to encrypt transfer chunk")?;
+        .map_err(|_| anyhow!("failed to encrypt transfer chunk"))?;
 
     Ok(EncryptedChunk {
         chunk_index,
@@ -184,7 +188,7 @@ pub fn decrypt_chunk(
                 aad: aad.as_bytes(),
             },
         )
-        .context("failed to decrypt transfer chunk")
+        .map_err(|_| anyhow!("failed to decrypt transfer chunk"))
 }
 
 fn import_public_key(encoded_public_key: &str) -> Result<PublicKey> {

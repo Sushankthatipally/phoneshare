@@ -5,14 +5,11 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "dev": "expo start",
-    "android": "expo start --android",
-    "ios": "expo start --ios",
-    "web": "expo start --web"
+    "dev": "tsc -p tsconfig.json --noEmit --watch --preserveWatchOutput",
+    "android": "echo \"Android native scaffold is not wired yet\"",
+    "ios": "echo \"iOS native scaffold is not wired yet\""
   },
   "dependencies": {
-    "@dropbeam/shared-ui": "workspace:*",
-    "@dropbeam/protocol": "workspace:*",
     "react": "^18.2.0"
   },
   "devDependencies": {

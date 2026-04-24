@@ -48,6 +48,10 @@ export function Settings({ backend }: { backend: DesktopBackendState }) {
               <strong>{iconLabel(deviceIcon)}</strong>
             </article>
             <article className="desktop-stat-card">
+              <span>Handshake</span>
+              <strong>Automatic</strong>
+            </article>
+            <article className="desktop-stat-card">
               <span>Auto-close</span>
               <strong>{autoCloseAfterDownload ? 'Enabled' : 'Disabled'}</strong>
             </article>

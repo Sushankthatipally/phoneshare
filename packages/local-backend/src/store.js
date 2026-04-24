@@ -1,15 +1,23 @@
 import { createWriteStream } from 'node:fs';
 import {
   access,
+  appendFile,
   mkdir,
   readFile,
   rename,
   writeFile,
 } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
-import { createHash, randomInt, randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+
+import {
+  createPairingTicket,
+  decryptTransferChunk,
+  deriveSessionSecret,
+  encryptTransferBuffer,
+} from './crypto.js';
 
 const DEFAULT_SETTINGS = {
   deviceName: 'DropBeam Desktop',
@@ -44,6 +52,8 @@ export class LocalBackendStore {
     this.sessions = new Map();
     this.fileIndex = new Map();
     this.uploads = new Map();
+    this.sessionSecrets = new Map();
+    this.pairingKeys = new Map();
   }
 
   async init() {
@@ -126,8 +136,14 @@ export class LocalBackendStore {
   async createSession(input = {}) {
     const now = new Date().toISOString();
     const sessionId = randomUUID();
-    const pin = createPin();
-    const origin = normalizeOrigin(input.origin ?? this.settings.publicOrigin);
+    const pairingOrigin = normalizeOrigin(input.origin ?? this.settings.publicOrigin);
+    const backendOrigin = normalizeOrigin(input.backendOrigin ?? 'http://127.0.0.1:17619');
+    const ticket = await createPairingTicket({
+      backendOrigin,
+      pairingOrigin,
+      sessionId,
+      transport: input.mode ?? this.settings.preferredMode,
+    });
     const session = {
       id: sessionId,
       mode: input.mode ?? this.settings.preferredMode,
@@ -143,14 +159,11 @@ export class LocalBackendStore {
       },
       peerDevice: null,
       pairing: {
-        pin,
-        pairingUrl: `${origin}/pair/${sessionId}?pin=${pin}`,
-        qrPayload: {
-          sessionId,
-          pin,
-          pairingUrl: `${origin}/pair/${sessionId}?pin=${pin}`,
-          origin,
-        },
+        pin: null,
+        guestAllowed: false,
+        encrypted: false,
+        pairingUrl: ticket.pairingUrl,
+        qrPayload: ticket.payload,
         verifiedAt: null,
       },
       files: {
@@ -163,6 +176,10 @@ export class LocalBackendStore {
       eventCount: 0,
     };
 
+    this.pairingKeys.set(sessionId, {
+      privateKey: ticket.privateKey,
+      publicKey: ticket.publicKey,
+    });
     this.sessions.set(sessionId, session);
     await this.persist();
     this.broadcast('session-created', { session: this.publicSession(session) });
@@ -184,14 +201,6 @@ export class LocalBackendStore {
       throw httpError(409, 'session is already closed');
     }
 
-    const pin = String(input.pin ?? '').trim();
-    if (!pin) {
-      throw httpError(400, 'pin is required');
-    }
-    if (pin !== session.pairing.pin) {
-      throw httpError(401, 'invalid pin');
-    }
-
     const now = new Date().toISOString();
     session.state = SESSION_STATES.paired;
     session.updatedAt = now;
@@ -203,6 +212,23 @@ export class LocalBackendStore {
       icon: sanitizeDeviceIcon(input.deviceIcon) ?? inferDeviceIcon(input.platform ?? input.kind),
     };
     session.pairing.verifiedAt = now;
+    session.pairing.encrypted = false;
+
+    if (typeof input.remotePublicKey === 'string' && input.remotePublicKey.trim()) {
+      const pairingKey = this.pairingKeys.get(sessionId);
+      if (!pairingKey?.privateKey) {
+        throw httpError(409, 'session encryption is not available for this pairing ticket');
+      }
+
+      const sessionSecret = await deriveSessionSecret({
+        privateKey: pairingKey.privateKey,
+        remotePublicKey: input.remotePublicKey.trim(),
+        sessionId,
+      });
+      this.sessionSecrets.set(sessionId, sessionSecret);
+      session.pairing.encrypted = true;
+    }
+
     session.summary = this.buildSummary(session);
 
     await this.persist();
@@ -239,6 +265,15 @@ export class LocalBackendStore {
   getUpload(uploadId) {
     const upload = this.requireUpload(uploadId);
     return this.publicUpload(upload);
+  }
+
+  getLocalDiscoveryDevice() {
+    return {
+      id: `dropbeam:${sanitizeText(this.settings.deviceName) ?? 'desktop'}:${process.pid}`,
+      name: this.settings.deviceName,
+      icon: sanitizeDeviceIcon(this.settings.deviceIcon) ?? 'desktop',
+      platform: process.platform,
+    };
   }
 
   async startUpload(sessionId, input = {}) {
@@ -327,13 +362,14 @@ export class LocalBackendStore {
       throw httpError(409, `chunk ${chunkIndex} cannot be accepted before chunk ${upload.nextChunk}`);
     }
 
-    const counter = new ByteCounterStream();
     const destinationPath = resolve(this.dataDir, upload.tempPath);
     await mkdir(dirname(destinationPath), { recursive: true });
-    const target = createWriteStream(destinationPath, { flags: 'a' });
-    await pipeline(request, counter, target);
+    const contentType = String(request.headers?.['content-type'] ?? '');
+    const bytesWritten = contentType.includes('application/json')
+      ? await this.receiveEncryptedChunk(upload, chunkIndex, request, destinationPath)
+      : await this.receivePlainChunk(request, destinationPath);
 
-    upload.uploadedBytes += counter.bytesWritten;
+    upload.uploadedBytes += bytesWritten;
     upload.nextChunk += 1;
     upload.updatedAt = new Date().toISOString();
     upload.averageBytesPerSecond = calculateAverageBytesPerSecond(upload.startedAt, upload.uploadedBytes);
@@ -424,22 +460,48 @@ export class LocalBackendStore {
       throw httpError(404, 'file not found');
     }
 
-    if (!file.downloadedAt) {
-      file.downloadedAt = new Date().toISOString();
-      file.status = 'downloaded';
-      session.updatedAt = file.downloadedAt;
-      session.summary = this.buildSummary(session);
-      session.queue = this.buildQueue(session);
-      await this.persist();
-      this.broadcast('file-downloaded', {
-        session: this.publicSession(session),
-        file: this.publicFile(file),
-      });
-    }
+    await this.markFileDownloaded(session, file);
 
     return {
       file: this.publicFile(file),
       path: resolve(this.dataDir, file.storagePath),
+    };
+  }
+
+  async downloadSecureFile(fileId, sessionId) {
+    const entry = this.fileIndex.get(fileId);
+    if (!entry || entry.sessionId !== sessionId) {
+      throw httpError(404, 'file not found');
+    }
+
+    const session = this.requireSession(entry.sessionId);
+    const file = session.files[entry.direction].find((item) => item.id === fileId);
+    if (!file) {
+      throw httpError(404, 'file not found');
+    }
+
+    const sessionSecret = this.sessionSecrets.get(sessionId);
+    if (!sessionSecret) {
+      throw httpError(409, 'session encryption key is not available');
+    }
+
+    const plaintext = new Uint8Array(await readFile(resolve(this.dataDir, file.storagePath)));
+    const payload = await encryptTransferBuffer({
+      chunkIndex: 0,
+      fileId,
+      plaintext,
+      rawKey: sessionSecret.rawKey,
+      sessionId,
+    });
+
+    await this.markFileDownloaded(session, file);
+
+    return {
+      file: this.publicFile(file),
+      encrypted: true,
+      keyId: sessionSecret.keyId,
+      algorithm: sessionSecret.algorithm,
+      payload,
     };
   }
 
@@ -553,9 +615,13 @@ export class LocalBackendStore {
         pin: session.pairing.pin,
         ticket: {
           sessionId: session.id,
-          pin: session.pairing.pin,
-          qrValue: JSON.stringify({ sessionId: session.id, pin: session.pairing.pin }),
+          pin: null,
+          qrValue: session.pairing.pairingUrl,
+          pairingUrl: session.pairing.pairingUrl,
+          guestAllowed: false,
         },
+        guestAllowed: false,
+        encrypted: Boolean(session.pairing.encrypted),
         verifiedAt: session.pairing.verifiedAt ?? null,
       },
       summary: this.buildSummary(session),
@@ -619,11 +685,12 @@ export class LocalBackendStore {
       createdAt: session.createdAt,
       updatedAt: session.updatedAt,
       closedAt: session.closedAt,
-      pin: session.pairing.pin,
+      pin: null,
       localDevice: this.publicDevice(session.localDevice, 'desktop'),
       peerDevice: session.peerDevice ? this.publicDevice(session.peerDevice, 'phone') : session.peerDevice,
       summary: this.buildSummary(session),
       fileCount: this.countFiles(session),
+      files: this.allFiles(session).map((file) => this.publicFile(file)),
     };
   }
 
@@ -731,6 +798,65 @@ export class LocalBackendStore {
       sourceRole: null,
     };
   }
+
+  async receivePlainChunk(request, destinationPath) {
+    const counter = new ByteCounterStream();
+    const target = createWriteStream(destinationPath, { flags: 'a' });
+    await pipeline(request, counter, target);
+    return counter.bytesWritten;
+  }
+
+  async receiveEncryptedChunk(upload, requestChunkIndex, request, destinationPath) {
+    const body = await readJson(request);
+    if (!body?.encrypted || !body?.chunk) {
+      throw httpError(400, 'encrypted upload chunk payload is invalid');
+    }
+
+    const sessionSecret = this.sessionSecrets.get(upload.sessionId);
+    if (!sessionSecret) {
+      throw httpError(409, 'session encryption key is not available');
+    }
+
+    const plaintext = await decryptTransferChunk({
+      chunk: body.chunk,
+      fileId: body.fileId ?? upload.id,
+      rawKey: sessionSecret.rawKey,
+      sessionId: upload.sessionId,
+    });
+
+    if (body.chunk.chunkIndex !== requestChunkIndex) {
+      throw httpError(409, 'encrypted chunk index did not match the upload slot');
+    }
+
+    await appendFile(destinationPath, Buffer.from(plaintext));
+    return plaintext.byteLength;
+  }
+
+  async markFileDownloaded(session, file) {
+    if (file.downloadedAt) {
+      return;
+    }
+
+    file.downloadedAt = new Date().toISOString();
+    file.status = 'downloaded';
+    session.updatedAt = file.downloadedAt;
+    session.summary = this.buildSummary(session);
+    session.queue = this.buildQueue(session);
+    if (
+      this.settings.autoCloseAfterDownload &&
+      session.summary.totalFiles > 0 &&
+      session.summary.completedFiles === session.summary.totalFiles
+    ) {
+      session.state = SESSION_STATES.completed;
+      session.closedAt = file.downloadedAt;
+      session.summary = this.buildSummary(session);
+    }
+    await this.persist();
+    this.broadcast('file-downloaded', {
+      session: this.publicSession(session),
+      file: this.publicFile(file),
+    });
+  }
 }
 
 class ByteCounterStream extends Transform {
@@ -750,10 +876,6 @@ async function writeJson(path, value) {
   const tempPath = `${path}.tmp`;
   await writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
   await rename(tempPath, path);
-}
-
-function createPin() {
-  return String(randomInt(0, 1_000_000)).padStart(6, '0');
 }
 
 function sanitizeFileName(value) {
@@ -837,6 +959,25 @@ async function drainRequest(request) {
   for await (const _chunk of request) {
     // Intentionally discard already-received request bodies.
   }
+}
+
+async function readJson(request) {
+  const chunks = [];
+
+  for await (const chunk of request) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+
+  if (!chunks.length) {
+    return {};
+  }
+
+  const text = Buffer.concat(chunks).toString('utf8').trim();
+  if (!text) {
+    return {};
+  }
+
+  return JSON.parse(text);
 }
 
 async function hashFile(path) {

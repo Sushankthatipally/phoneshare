@@ -1,19 +1,8 @@
 import { startTransition, useMemo, useState } from 'react';
 
-import {
-  Download,
-  History as HistoryIcon,
-  House,
-  Laptop,
-  QrCode,
-  RefreshCw,
-  Settings as SettingsIcon,
-  SendHorizontal,
-  Smartphone,
-  Zap,
-} from 'lucide-react';
+import { Download, History as HistoryIcon, House, Laptop, RefreshCw, Settings as SettingsIcon, SendHorizontal, Smartphone, Zap } from 'lucide-react';
 
-import { Badge, Button, GlassPanel, SectionHeading } from '@dropbeam/shared-ui';
+import { Badge, Button, GlassPanel, QrCode, SectionHeading } from '@dropbeam/shared-ui';
 import { formatBytes } from '@dropbeam/protocol';
 
 import { useDesktopBackend } from './features/dashboard/useDesktopBackend.js';
@@ -54,11 +43,11 @@ export default function App() {
     }
 
     if (!activeSession) {
-      return 'Create a session to issue a live PIN and open a transfer lane.';
+      return 'Create a session to publish a QR ticket and wait for a secure handshake.';
     }
 
     if (!activeSession.pairing.verifiedAt) {
-      return `Session ${activeSession.id.slice(0, 8)} is waiting for phone verification.`;
+      return `Session ${activeSession.id.slice(0, 8)} is waiting for a device handshake.`;
     }
 
     return `Paired with ${activeSession.peerDevice?.name ?? 'a phone'} and ready for live transfers.`;
@@ -182,7 +171,7 @@ export default function App() {
                 title={activeSession ? 'Current pairing lane' : 'Create a session first'}
                 description={
                   activeSession
-                    ? `Share PIN ${activeSession.pairing.pin} to pair the phone.`
+                    ? 'Scan the QR or pick a discovered device to establish the secure lane.'
                     : 'No session is currently selected.'
                 }
               />
@@ -219,18 +208,21 @@ export default function App() {
                   </div>
 
                   <div className="desktop-device-list">
-                    {backend.sessions.length ? (
-                      backend.sessions.map((session) => {
-                        const DeviceIcon = iconForDevice(session.peerDevice?.icon ?? session.localDevice.icon);
-                        const bars = signalBars(session.mode);
+                    {backend.devices.length ? (
+                      backend.devices.map((device) => {
+                        const DeviceIcon = iconForDevice(device.icon);
+                        const bars = signalBars(device.transport);
+                        const active = device.local ? backend.selectedSessionId === activeSession?.id : false;
 
                         return (
                           <button
-                            className={`desktop-device-card${
-                              backend.selectedSessionId === session.id ? ' desktop-device-card--active' : ''
-                            }`}
-                            key={session.id}
-                            onClick={() => backend.setSelectedSessionId(session.id)}
+                            className={`desktop-device-card${active ? ' desktop-device-card--active' : ''}`}
+                            key={device.id}
+                            onClick={() => {
+                              if (device.local && activeSession) {
+                                backend.setSelectedSessionId(activeSession.id);
+                              }
+                            }}
                             type="button"
                           >
                             <div className="desktop-device-card__icon">
@@ -238,13 +230,19 @@ export default function App() {
                             </div>
 
                             <div className="desktop-device-card__copy">
-                              <strong>{session.peerDevice?.name ?? `${session.localDevice.name} lane`}</strong>
+                              <strong>{device.name}</strong>
                               <div className="desktop-device-card__meta">
-                                <span>{modeLabel(session.mode)}</span>
-                                {session.pairing.verifiedAt ? (
-                                  <small>Verified</small>
+                                <span>{modeLabel(device.transport)}</span>
+                                {device.local ? (
+                                  activeSession?.pairing.verifiedAt ? (
+                                    <small>Secure lane ready</small>
+                                  ) : activeSession ? (
+                                    <small>Waiting for handshake</small>
+                                  ) : (
+                                    <small>Open a session to pair</small>
+                                  )
                                 ) : (
-                                  <small>PIN {session.pairing.pin}</small>
+                                  <small>LAN discovery</small>
                                 )}
                               </div>
                             </div>
@@ -266,23 +264,29 @@ export default function App() {
                       })
                     ) : (
                       <div className="desktop-empty-state">
-                        <p>No live sessions are available yet. Create one from the desktop app first.</p>
+                        <p>No LAN devices are visible yet. Keep the backend open on the same network and refresh.</p>
                       </div>
                     )}
                   </div>
                 </>
               ) : (
                 <div className="desktop-qr-placeholder">
-                  <div className="desktop-qr-placeholder__box">
-                    <QrCode size={54} strokeWidth={1.7} />
-                  </div>
+                  <QrCode size={216} value={activeSession?.pairing.ticket.qrValue} />
                   <div className="desktop-qr-placeholder__copy">
-                    <strong>{activeSession ? `PIN ${activeSession.pairing.pin}` : 'No QR session yet'}</strong>
-                    <p>
-                      Open the phone app and scan the desktop pairing QR, or switch to the devices tab and choose a
-                      live session directly.
-                    </p>
+                    <strong>
+                      {activeSession ? 'Secure ticket ready' : 'No QR session yet'}
+                    </strong>
+                    <p>Scan the live pairing QR on the other device, or switch to the devices tab and choose a discovered peer.</p>
                   </div>
+                  <Button
+                    disabled={!activeSession?.pairing.ticket.qrValue}
+                    onClick={() => {
+                      void navigator.clipboard?.writeText?.(activeSession?.pairing.ticket.qrValue ?? '');
+                    }}
+                    variant="secondary"
+                  >
+                    Copy pairing ticket
+                  </Button>
                 </div>
               )}
             </GlassPanel>
@@ -298,6 +302,7 @@ export default function App() {
                 <li>Transferring sessions: {backend.health?.transferringSessions ?? 0}</li>
                 <li>Completed sessions: {backend.dashboard?.totals.completed ?? 0}</li>
                 <li>Clipboard source: {backend.clipboard?.sourceDeviceName ?? 'none'}</li>
+                <li>Handshake flow: QR + local discovery</li>
               </ul>
               <Badge tone="blue">Local backend only</Badge>
             </GlassPanel>

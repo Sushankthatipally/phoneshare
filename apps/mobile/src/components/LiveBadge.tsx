@@ -2,9 +2,11 @@ import type { PropsWithChildren } from 'react';
 
 import { Text, View } from '../lib/native.js';
 
-export function LiveBadge({ children }: PropsWithChildren) {
+type Tone = 'blue' | 'amber' | 'green' | 'slate';
+
+export function LiveBadge({ children, tone = 'blue' }: PropsWithChildren<{ tone?: Tone }>) {
   return (
-    <View style={styles.badge}>
+    <View style={{ ...styles.badge, ...toneStyles[tone] }}>
       <Text style={styles.text}>{children}</Text>
     </View>
   );
@@ -13,19 +15,24 @@ export function LiveBadge({ children }: PropsWithChildren) {
 const styles = {
   badge: {
     alignItems: 'center',
-    backgroundColor: '#10263d',
-    borderColor: '#274860',
     borderRadius: 999,
-    borderStyle: 'solid',
+    borderStyle: 'solid' as const,
     borderWidth: 1,
     paddingHorizontal: 12,
     paddingVertical: 6,
   },
   text: {
-    color: '#d7f4ff',
-    fontSize: 12,
-    fontWeight: 700,
-    letterSpacing: 0.6,
+    color: '#dfefff',
+    fontSize: 11,
+    fontWeight: 800,
+    letterSpacing: 0.8,
     textTransform: 'uppercase' as const,
   },
+};
+
+const toneStyles: Record<Tone, { backgroundColor: string; borderColor: string }> = {
+  blue: { backgroundColor: '#10263d', borderColor: '#274860' },
+  amber: { backgroundColor: '#3a2d11', borderColor: '#6f5518' },
+  green: { backgroundColor: '#113321', borderColor: '#24583b' },
+  slate: { backgroundColor: '#0d1724', borderColor: '#243447' },
 };
