@@ -26,6 +26,7 @@
     "active": true,
     "targets": ["nsis"],
     "icon": ["icons/icon.ico"],
-    "externalBin": ["binaries/dropbeam-backend"]
+    "externalBin": ["binaries/dropbeam-backend"],
+    "resources": ["../scripts/diagnose-mac.sh", "../scripts/diagnose-windows.ps1"]
   }
 }

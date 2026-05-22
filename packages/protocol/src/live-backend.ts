@@ -380,6 +380,18 @@ export interface PendingTransferBatch {
   }>;
 }
 
+export interface PreferredOrigin {
+  host: string;
+  interface: string;
+  score: number;
+  origin: string;
+}
+
+export interface LanIpsResponse {
+  preferred: PreferredOrigin;
+  candidates: PreferredOrigin[];
+}
+
 export interface BackendHealth {
   ok: boolean;
   uptimeSeconds: number;
