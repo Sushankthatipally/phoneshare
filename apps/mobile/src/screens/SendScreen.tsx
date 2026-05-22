@@ -37,6 +37,22 @@ export function SendScreenView() {
     );
   }
 
+  if (connection.kind !== 'guest') {
+    return (
+      <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.scroll}>
+        <View style={styles.card}>
+          <Text style={styles.eyebrow}>SECURE SESSION</Text>
+          <Text style={styles.title}>Paired with {connection.label}</Text>
+          <Text style={styles.copy}>
+            Native send is wired up in W15. For now, secure sessions only support receive; switch to a guest share URL to upload.
+          </Text>
+        </View>
+      </ScrollView>
+    );
+  }
+
+  const guest = connection;
+
   const pickAndUpload = async () => {
     setBusy(true);
     try {
@@ -60,7 +76,7 @@ export function SendScreenView() {
         });
         try {
           const response = await uploadGuestFile({
-            connection,
+            connection: guest,
             fileUri: asset.uri,
             name: asset.name,
             size: asset.size ?? 0,
@@ -88,7 +104,7 @@ export function SendScreenView() {
     <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.scroll}>
       <View style={styles.card}>
         <Text style={styles.eyebrow}>SEND</Text>
-        <Text style={styles.title}>Upload to {connection.label}</Text>
+        <Text style={styles.title}>Upload to {guest.label}</Text>
         <Text style={styles.copy}>Pick one or more files. They'll upload directly to your desktop's DropBeam app.</Text>
         <Button disabled={busy} onPress={() => void pickAndUpload()}>
           {busy ? 'Picking…' : 'Pick files'}

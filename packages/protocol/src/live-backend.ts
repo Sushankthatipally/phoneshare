@@ -27,6 +27,23 @@ export interface HotspotPairingPayload {
 
 export type PairingPayload = DirectPairingPayload | HotspotPairingPayload;
 
+export type PinVerificationFailureReason = 'mismatch' | 'locked' | 'expired' | 'invalid-session';
+
+export interface ConnectSessionRequest {
+  publicKey: string;
+  deviceName: string;
+  deviceIcon?: DeviceIcon;
+  deviceFingerprint: string;
+  platform?: 'android' | 'ios';
+}
+
+export interface ConnectSessionResponse {
+  ok: boolean;
+  sessionId: string;
+  state: 'pin-required' | 'paired' | 'locked';
+  serverPublicKey: string;
+  expiresAt?: string | null;
+}
 
 export type DeviceIcon = 'desktop' | 'laptop' | 'phone' | 'tablet';
 

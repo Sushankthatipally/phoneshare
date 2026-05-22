@@ -1,6 +1,6 @@
 import * as FileSystem from 'expo-file-system';
 
-import type { ConnectionInfo } from './connection.js';
+import type { GuestConnection } from './connection.js';
 
 /**
  * Uploads a single file to the desktop's guest endpoint.
@@ -12,7 +12,7 @@ import type { ConnectionInfo } from './connection.js';
  * onProgress receives 0..100. expo-file-system's createUploadTask gives byte-level callbacks.
  */
 export async function uploadGuestFile(params: {
-  connection: ConnectionInfo;
+  connection: GuestConnection;
   fileUri: string;
   name: string;
   size: number;
@@ -55,7 +55,7 @@ export async function uploadGuestFile(params: {
 /**
  * Probe the desktop backend health endpoint to verify the share URL is reachable.
  */
-export async function probeHealth(connection: ConnectionInfo): Promise<boolean> {
+export async function probeHealth(connection: { origin: string }): Promise<boolean> {
   try {
     const response = await fetch(`${connection.origin}/api/health`, { method: 'GET' });
     return response.ok;

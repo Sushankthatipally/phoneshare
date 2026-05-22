@@ -3,7 +3,7 @@ import { StyleSheet, Linking } from 'react-native';
 import { useCameraPermissions } from 'expo-camera';
 import * as Notifications from 'expo-notifications';
 
-import { Button, ScrollView, Text, View } from '../lib/native.js';
+import { Button, Pressable, ScrollView, Text, View } from '../lib/native.js';
 
 type Status = 'pending' | 'granted' | 'denied';
 
@@ -100,11 +100,11 @@ export function PermissionScreen({ onContinue }: { onContinue: () => void }) {
         </View>
 
         <Text style={styles.footnote}>
-          Tip: if you accidentally denied something, you can re-enable it in Android Settings → DropBeam → Permissions.{' '}
-          <Text style={styles.link} onPress={() => void Linking.openSettings()}>
-            Open settings
-          </Text>
+          Tip: if you accidentally denied something, you can re-enable it in Android Settings → DropBeam → Permissions.
         </Text>
+        <Pressable onPress={() => void Linking.openSettings()}>
+          <Text style={styles.link}>Open settings</Text>
+        </Pressable>
       </View>
     </ScrollView>
   );

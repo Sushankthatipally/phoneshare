@@ -1,10 +1,11 @@
 import { useState } from 'react';
 import { StyleSheet } from 'react-native';
+import * as Device from 'expo-device';
 
 import { Button, ScrollView, Text, TextInput, View } from '../lib/native.js';
 
 export function OnboardingScreen({ onDone }: { onDone: (name: string) => void }) {
-  const [name, setName] = useState('My Phone');
+  const [name, setName] = useState(() => Device.deviceName ?? '');
 
   return (
     <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.scroll}>
@@ -15,10 +16,10 @@ export function OnboardingScreen({ onDone }: { onDone: (name: string) => void })
           Other devices will see this name when you connect. You can change it later in Settings.
         </Text>
 
-        <TextInput onChangeText={setName} placeholder="My Phone" value={name} />
+        <TextInput onChangeText={setName} placeholder="My phone" value={name} />
 
         <View style={{ marginTop: 12 }}>
-          <Button onPress={() => onDone(name.trim() || 'My Phone')}>Continue →</Button>
+          <Button onPress={() => onDone(name.trim() || Device.deviceName || 'My phone')}>Continue</Button>
         </View>
       </View>
 

@@ -3,64 +3,107 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 import { Alert, StyleSheet } from 'react-native';
 import { useRouter } from 'expo-router';
 
-import { Button, ScrollView, Text, TextInput, View } from '../lib/native.js';
-import { parseShareUrl, useConnection } from '../lib/connection.js';
+import { Badge, Button, GlassPanel, SectionHeading, tokens } from '@dropbeam/shared-ui-rn';
+
+import { Pressable, ScrollView, Text, TextInput, View } from '../lib/native.js';
+import { parseSessionPayload, useConnection } from '../lib/connection.js';
 import { probeHealth } from '../lib/api.js';
+import { useDiscovery } from '../lib/discovery.js';
 
 export function ConnectScreen() {
-  const { connection, setConnection } = useConnection();
+  const {
+    connection,
+    state,
+    disconnect,
+    attachGuestSession,
+    startDirectHandshake,
+    startHotspotHandshake,
+  } = useConnection();
   const [permission, requestPermission] = useCameraPermissions();
   const [scanning, setScanning] = useState(false);
   const [manualUrl, setManualUrl] = useState('');
   const [verifying, setVerifying] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const router = useRouter();
+  const discovery = useDiscovery();
 
-  const tryConnect = async (raw: string, source: 'qr' | 'manual') => {
+  const handleParsed = async (raw: string, source: 'qr' | 'manual') => {
     setError(null);
-    const parsed = parseShareUrl(raw);
+    const parsed = parseSessionPayload(raw);
     if (!parsed) {
-      setError("Couldn't parse that URL. It should look like http://192.168.x.x:17619/guest/<token>");
+      setError(
+        'Unrecognized code. Expected a DropBeam pairing QR or a guest share URL like http://192.168.x.x:17619/guest/<token>.',
+      );
       return;
     }
-    setVerifying(true);
-    const reachable = await probeHealth(parsed);
-    setVerifying(false);
-    if (!reachable) {
-      setError(`Couldn't reach ${parsed.label}. Make sure DropBeam desktop is running and you're on the same Wi-Fi.`);
+
+    if (parsed.kind === 'guest') {
+      setVerifying(true);
+      const reachable = await probeHealth({ origin: parsed.origin });
+      setVerifying(false);
+      if (!reachable) {
+        setError(
+          `Couldn't reach ${parsed.label}. Make sure DropBeam desktop is running and you're on the same Wi-Fi.`,
+        );
+        return;
+      }
+      await attachGuestSession(parsed);
+      setScanning(false);
+      setManualUrl('');
+      if (source === 'qr') {
+        Alert.alert('Connected', `Linked to ${parsed.label}`);
+      }
+      router.replace('/send');
       return;
     }
-    setConnection(parsed);
+
+    if (parsed.kind === 'hotspot') {
+      await startHotspotHandshake(parsed);
+      setScanning(false);
+      router.replace('/pin');
+      return;
+    }
+
+    // direct
+    await startDirectHandshake(parsed);
     setScanning(false);
-    setManualUrl('');
-    if (source === 'qr') {
-      Alert.alert('Connected', `Linked to ${parsed.label}`);
-    }
-    router.replace('/send');
+    router.replace('/pin');
   };
 
   const onScan = ({ data }: { data: string }) => {
     if (!scanning) return;
     setScanning(false);
-    void tryConnect(data, 'qr');
+    void handleParsed(data, 'qr');
   };
 
   if (connection) {
     return (
       <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.scroll}>
-        <View style={styles.card}>
-          <Text style={styles.eyebrow}>CONNECTED</Text>
-          <Text style={styles.title}>{connection.label}</Text>
-          <Text style={styles.copy}>You're paired with this desktop. Open the Send tab to upload files.</Text>
-          <View style={styles.row}>
-            <View style={{ flex: 1 }}>
-              <Button onPress={() => router.push('/send')}>Send files →</Button>
+        <GlassPanel>
+          <Badge tone="green">Paired</Badge>
+          <View style={styles.spacer} />
+          <SectionHeading
+            eyebrow={connection.kind === 'guest' ? 'Guest session' : 'Encrypted session'}
+            title={connection.label}
+            description={
+              connection.kind === 'guest'
+                ? 'Uploads stream to the desktop via the guest share. Open Send to pick files.'
+                : 'End-to-end encrypted. Resume on reconnect.'
+            }
+          />
+          <View style={styles.actionRow}>
+            <View style={styles.actionItem}>
+              <Button variant="primary" onPress={() => router.push('/send')}>
+                Send files
+              </Button>
             </View>
-            <View style={{ flex: 1 }}>
-              <Button onPress={() => setConnection(null)}>Disconnect</Button>
+            <View style={styles.actionItem}>
+              <Button variant="ghost" onPress={() => void disconnect()}>
+                Disconnect
+              </Button>
             </View>
           </View>
-        </View>
+        </GlassPanel>
       </ScrollView>
     );
   }
@@ -79,12 +122,12 @@ export function ConnectScreen() {
           <Text style={styles.title}>Camera permission needed</Text>
           <Text style={styles.copy}>DropBeam uses the camera only to scan the pairing QR code.</Text>
           <Button onPress={() => void requestPermission()}>Grant camera</Button>
-          <Button onPress={() => setScanning(false)}>Cancel</Button>
+          <Button variant="ghost" onPress={() => setScanning(false)}>Cancel</Button>
         </View>
       );
     }
     return (
-      <View style={{ flex: 1, backgroundColor: '#000' }}>
+      <View style={{ flex: 1, backgroundColor: tokens.color.bg }}>
         <CameraView
           style={{ flex: 1 }}
           facing="back"
@@ -92,8 +135,8 @@ export function ConnectScreen() {
           barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
         />
         <View style={styles.scannerHud}>
-          <Text style={styles.scannerHudText}>Point at the QR shown by the desktop app's Guest share</Text>
-          <Button onPress={() => setScanning(false)}>Cancel</Button>
+          <Text style={styles.scannerHudText}>Point at the QR shown by the desktop</Text>
+          <Button variant="ghost" onPress={() => setScanning(false)}>Cancel</Button>
         </View>
       </View>
     );
@@ -101,77 +144,89 @@ export function ConnectScreen() {
 
   return (
     <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.scroll}>
-      <View style={styles.card}>
-        <Text style={styles.eyebrow}>HOW DO YOU WANT TO CONNECT?</Text>
-        <Text style={styles.title}>Choose a mode</Text>
-        <Text style={styles.copy}>
-          On the desktop app, open the <Text style={styles.copyBold}>Guest</Text> tab and tap{' '}
-          <Text style={styles.copyBold}>Create share</Text>. You'll get a QR code and a link.
-        </Text>
-      </View>
+      <GlassPanel>
+        <SectionHeading
+          eyebrow="Connect"
+          title="Pair with a desktop"
+          description="Scan the QR shown by the desktop app, paste a guest URL, or pick a discovered device."
+        />
+      </GlassPanel>
 
-      <View style={styles.card}>
-        <View style={styles.modeHeader}>
-          <Text style={styles.modeIcon}>📶</Text>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.modeLabel}>Same Wi-Fi · QR</Text>
-            <Text style={styles.modeCopy}>Recommended. Scan the desktop's QR or paste its URL.</Text>
-          </View>
-          <Text style={[styles.modeBadge, styles.modeBadgeOn]}>READY</Text>
-        </View>
-        <Button onPress={async () => {
-          if (!permission?.granted) {
-            const result = await requestPermission();
-            if (!result.granted) return;
-          }
-          setScanning(true);
-        }}>
+      <GlassPanel>
+        <Badge tone="blue">Same Wi-Fi · QR</Badge>
+        <View style={styles.spacer} />
+        <Text style={styles.copy}>Recommended path. Decrypts the pairing payload locally and runs a six-digit PIN handshake.</Text>
+        <View style={styles.spacerLg} />
+        <Button
+          variant="primary"
+          onPress={async () => {
+            if (!permission?.granted) {
+              const result = await requestPermission();
+              if (!result.granted) return;
+            }
+            setScanning(true);
+          }}
+        >
           Open scanner
         </Button>
+        <View style={styles.spacer} />
         <TextInput
           onChangeText={setManualUrl}
-          placeholder="…or paste http://192.168.1.x:17619/guest/<token>"
+          placeholder="http://192.168.1.x:17619/guest/<token>"
           value={manualUrl}
         />
-        <Button disabled={!manualUrl.trim() || verifying} onPress={() => void tryConnect(manualUrl, 'manual')}>
+        <View style={styles.spacer} />
+        <Button
+          disabled={!manualUrl.trim() || verifying}
+          onPress={() => void handleParsed(manualUrl, 'manual')}
+        >
           {verifying ? 'Checking…' : 'Connect via URL'}
         </Button>
-      </View>
+      </GlassPanel>
 
-      <View style={[styles.card, styles.cardDisabled]}>
-        <View style={styles.modeHeader}>
-          <Text style={styles.modeIcon}>🔌</Text>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.modeLabel}>USB cable</Text>
-            <Text style={styles.modeCopy}>Plug your phone in via USB-C for fastest transfer.</Text>
+      <GlassPanel>
+        <Badge tone={discovery.available ? 'amber' : 'neutral'}>
+          {discovery.available ? `Nearby · ${discovery.peers.length}` : 'mDNS unavailable'}
+        </Badge>
+        <View style={styles.spacer} />
+        <SectionHeading
+          title="Nearby devices"
+          description={
+            discovery.available
+              ? 'Devices advertising _dropbeam._tcp on this network.'
+              : 'react-native-zeroconf needs a native build. Run `expo prebuild` and rebuild the app.'
+          }
+        />
+        <View style={styles.spacerLg} />
+        {discovery.peers.length === 0 ? (
+          <Text style={styles.copyDim}>No nearby devices.</Text>
+        ) : (
+          <View style={{ gap: tokens.spacing.sm }}>
+            {discovery.peers.map((peer) => (
+              <Pressable
+                key={peer.id}
+                onPress={() => {
+                  setManualUrl(`http://${peer.host}:${peer.port}`);
+                }}
+                style={styles.peerRow}
+              >
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.peerName}>{peer.name}</Text>
+                  <Text style={styles.peerMeta}>{peer.host}:{peer.port}</Text>
+                </View>
+                {peer.fingerprint ? <Text style={styles.peerMeta}>{peer.fingerprint.slice(0, 6)}</Text> : null}
+              </Pressable>
+            ))}
           </View>
-          <Text style={[styles.modeBadge, styles.modeBadgeOff]}>NOT BUILT</Text>
-        </View>
-        <Text style={styles.disabledNote}>
-          Native ADB / usbmuxd integration on the desktop is currently a stub. This will land in a future update —
-          tracked in DROPBEAM_USER_FLOWS.md Flow 2.2.
-        </Text>
-      </View>
+        )}
+      </GlassPanel>
 
-      <View style={[styles.card, styles.cardDisabled]}>
-        <View style={styles.modeHeader}>
-          <Text style={styles.modeIcon}>📡</Text>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.modeLabel}>Hotspot (no Wi-Fi)</Text>
-            <Text style={styles.modeCopy}>Phone creates a private hotspot when there's no shared network.</Text>
-          </View>
-          <Text style={[styles.modeBadge, styles.modeBadgeOff]}>NOT BUILT</Text>
-        </View>
-        <Text style={styles.disabledNote}>
-          Programmatic hotspot creation needs the Android WifiManager LOHS API (8.0+) and a permissioned native module.
-          Currently the in-tree module only opens the Wi-Fi settings panel. Flow 2.4.
-        </Text>
-      </View>
-
-      {error ? (
-        <View style={[styles.card, styles.errorCard]}>
-          <Text style={styles.errorText}>{error}</Text>
-        </View>
+      {error || state === 'error' ? (
+        <GlassPanel>
+          <Badge tone="danger">Error</Badge>
+          <View style={styles.spacer} />
+          <Text style={styles.errorText}>{error ?? 'Connection failed.'}</Text>
+        </GlassPanel>
       ) : null}
     </ScrollView>
   );
@@ -179,105 +234,83 @@ export function ConnectScreen() {
 
 const styles = StyleSheet.create({
   scroll: {
-    gap: 14,
-    padding: 16,
+    gap: tokens.spacing.md,
+    padding: tokens.spacing.lg,
   },
+  spacer: { height: tokens.spacing.sm },
+  spacerLg: { height: tokens.spacing.md },
   center: {
     alignItems: 'center',
     flex: 1,
-    gap: 12,
+    gap: tokens.spacing.md,
     justifyContent: 'center',
-    padding: 24,
-  },
-  card: {
-    backgroundColor: '#0a0a0a',
-    borderColor: '#1f1f1f',
-    borderRadius: 18,
-    borderWidth: 1,
-    gap: 10,
-    padding: 16,
-  },
-  errorCard: {
-    backgroundColor: '#2a0e0e',
-    borderColor: '#6b1e1e',
-  },
-  errorText: {
-    color: '#ffd4d4',
-    lineHeight: 20,
-  },
-  eyebrow: {
-    color: '#7a7a7a',
-    fontSize: 11,
-    fontWeight: '800',
-    letterSpacing: 1.5,
+    padding: tokens.spacing.xl,
+    backgroundColor: tokens.color.bg,
   },
   title: {
-    color: '#ffffff',
-    fontSize: 20,
-    fontWeight: '800',
+    color: tokens.color.text,
+    fontFamily: tokens.font.sans,
+    fontSize: tokens.fontSize.title,
+    fontWeight: tokens.fontWeight.bold,
   },
   copy: {
-    color: '#b8b8b8',
-    lineHeight: 20,
+    color: tokens.color.textSoft,
+    fontFamily: tokens.font.sans,
+    fontSize: tokens.fontSize.body,
+    lineHeight: tokens.lineHeight.body,
   },
-  copyBold: {
-    color: '#ffffff',
-    fontWeight: '700',
+  copyDim: {
+    color: tokens.color.textDim,
+    fontFamily: tokens.font.sans,
+    fontSize: tokens.fontSize.body,
   },
-  row: {
+  actionRow: {
     flexDirection: 'row',
-    gap: 10,
+    gap: tokens.spacing.sm,
+    marginTop: tokens.spacing.md,
   },
+  actionItem: { flex: 1 },
   scannerHud: {
     alignItems: 'center',
-    backgroundColor: 'rgba(0,0,0,0.85)',
+    backgroundColor: tokens.color.overlay,
     bottom: 0,
-    gap: 12,
+    gap: tokens.spacing.md,
     left: 0,
-    padding: 18,
+    padding: tokens.spacing.lg,
     position: 'absolute',
     right: 0,
   },
   scannerHudText: {
-    color: '#ffffff',
-    fontSize: 13,
+    color: tokens.color.text,
+    fontFamily: tokens.font.sans,
+    fontSize: tokens.fontSize.body,
     textAlign: 'center',
   },
-  cardDisabled: {
-    opacity: 0.55,
-  },
-  modeHeader: {
+  peerRow: {
     alignItems: 'center',
+    backgroundColor: tokens.color.inputBg,
+    borderColor: tokens.color.panelBorder,
+    borderRadius: tokens.radius.lg,
+    borderWidth: 1,
     flexDirection: 'row',
-    gap: 12,
+    gap: tokens.spacing.sm,
+    padding: tokens.spacing.md,
   },
-  modeIcon: { fontSize: 22 },
-  modeLabel: {
-    color: '#ffffff',
-    fontSize: 15,
-    fontWeight: '700',
+  peerName: {
+    color: tokens.color.text,
+    fontFamily: tokens.font.sans,
+    fontSize: tokens.fontSize.bodyLg,
+    fontWeight: tokens.fontWeight.semibold,
   },
-  modeCopy: {
-    color: '#8a8a8a',
-    fontSize: 12,
-    lineHeight: 17,
-    marginTop: 2,
+  peerMeta: {
+    color: tokens.color.textSoft,
+    fontFamily: tokens.font.sans,
+    fontSize: tokens.fontSize.caption,
   },
-  modeBadge: {
-    borderRadius: 999,
-    fontSize: 10,
-    fontWeight: '800',
-    overflow: 'hidden',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    textTransform: 'uppercase',
-  },
-  modeBadgeOn: { backgroundColor: '#0e2a14', color: '#9ee0a8' },
-  modeBadgeOff: { backgroundColor: '#2a1f0e', color: '#ffd29a' },
-  disabledNote: {
-    color: '#9a9a9a',
-    fontSize: 12,
-    fontStyle: 'italic',
-    lineHeight: 18,
+  errorText: {
+    color: tokens.color.danger,
+    fontFamily: tokens.font.sans,
+    fontSize: tokens.fontSize.body,
+    lineHeight: tokens.lineHeight.body,
   },
 });
