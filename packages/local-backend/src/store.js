@@ -9,6 +9,7 @@ import {
 } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
+import { networkInterfaces } from 'node:os';
 import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
@@ -19,18 +20,28 @@ import {
   encryptTransferBuffer,
 } from './crypto.js';
 
+const QR_TTL_MS = 10 * 60 * 1000;
+const GUEST_TTL_MS = 60 * 60 * 1000;
+const MAX_PIN_ATTEMPTS = 3;
+
 const DEFAULT_SETTINGS = {
   deviceName: 'DropBeam Desktop',
   deviceIcon: 'desktop',
   preferredMode: 'wifi',
   publicOrigin: process.env.DROPBEAM_PUBLIC_ORIGIN ?? 'http://127.0.0.1:5174',
+  downloadFolder: '~/Downloads/DropBeam/',
+  connectionMode: 'auto',
   autoCloseAfterDownload: false,
+  autoAcceptTrusted: false,
+  onboardingComplete: false,
+  watchFolders: [],
   createdAt: new Date().toISOString(),
   updatedAt: new Date().toISOString(),
 };
 
 const SESSION_STATES = {
   pairing: 'pairing',
+  awaitingAccept: 'awaiting-accept',
   paired: 'paired',
   transferring: 'transferring',
   completed: 'completed',
@@ -46,7 +57,7 @@ export class LocalBackendStore {
     this.emit = emit;
     this.stateFile = join(this.dataDir, 'state.json');
     this.filesDir = join(this.dataDir, 'files');
-    this.snapshotsDir = join(this.dataDir, 'snapshots');
+    this.guestDir = join(this.dataDir, 'guest');
     this.settings = structuredClone(DEFAULT_SETTINGS);
     this.clipboard = this.emptyClipboard();
     this.sessions = new Map();
@@ -54,12 +65,15 @@ export class LocalBackendStore {
     this.uploads = new Map();
     this.sessionSecrets = new Map();
     this.pairingKeys = new Map();
+    this.trustedDevices = new Map();
+    this.knownDevices = new Map();
+    this.guestShares = new Map();
   }
 
   async init() {
     await mkdir(this.dataDir, { recursive: true });
     await mkdir(this.filesDir, { recursive: true });
-    await mkdir(this.snapshotsDir, { recursive: true });
+    await mkdir(this.guestDir, { recursive: true });
     await this.loadState();
   }
 
@@ -75,12 +89,11 @@ export class LocalBackendStore {
         ...this.emptyClipboard(),
         ...(parsed.clipboard ?? {}),
       };
-      this.sessions = new Map(
-        Object.entries(parsed.sessions ?? {}).map(([id, session]) => [id, session]),
-      );
-      this.uploads = new Map(
-        Object.entries(parsed.uploads ?? {}).map(([id, upload]) => [id, upload]),
-      );
+      this.sessions = new Map(Object.entries(parsed.sessions ?? {}));
+      this.uploads = new Map(Object.entries(parsed.uploads ?? {}));
+      this.trustedDevices = new Map(Object.entries(parsed.trustedDevices ?? {}));
+      this.knownDevices = new Map(Object.entries(parsed.knownDevices ?? {}));
+      this.guestShares = new Map(Object.entries(parsed.guestShares ?? {}));
       this.rebuildFileIndex();
       return;
     } catch (error) {
@@ -92,25 +105,35 @@ export class LocalBackendStore {
     await this.persist();
   }
 
+  // ─── Settings ─────────────────────────────────────────────
+
   getSettings() {
     return this.publicSettings();
   }
 
-  getClipboard() {
-    return structuredClone(this.clipboard);
-  }
-
   async updateSettings(patch) {
-    const allowed = ['deviceName', 'deviceIcon', 'preferredMode', 'autoCloseAfterDownload'];
+    const allowed = [
+      'deviceName',
+      'deviceIcon',
+      'preferredMode',
+      'downloadFolder',
+      'connectionMode',
+      'autoCloseAfterDownload',
+      'autoAcceptTrusted',
+      'onboardingComplete',
+      'watchFolders',
+    ];
     for (const key of allowed) {
-      if (key in patch) {
-        if (key === 'deviceIcon') {
-          this.settings.deviceIcon = sanitizeDeviceIcon(patch.deviceIcon) ?? DEFAULT_SETTINGS.deviceIcon;
-          continue;
-        }
-
-        this.settings[key] = patch[key];
+      if (!(key in patch)) continue;
+      if (key === 'deviceIcon') {
+        this.settings.deviceIcon = sanitizeDeviceIcon(patch.deviceIcon) ?? DEFAULT_SETTINGS.deviceIcon;
+        continue;
       }
+      if (key === 'watchFolders') {
+        this.settings.watchFolders = Array.isArray(patch.watchFolders) ? patch.watchFolders.slice(0, 16) : [];
+        continue;
+      }
+      this.settings[key] = patch[key];
     }
 
     this.settings.updatedAt = new Date().toISOString();
@@ -119,38 +142,49 @@ export class LocalBackendStore {
     return this.getSettings();
   }
 
+  // ─── Clipboard ────────────────────────────────────────────
+
+  getClipboard() {
+    return structuredClone(this.clipboard);
+  }
+
   async updateClipboard(patch = {}) {
-    const nextClipboard = {
+    this.clipboard = {
       text: typeof patch.text === 'string' ? patch.text.slice(0, 200_000) : '',
       updatedAt: new Date().toISOString(),
       sourceDeviceName: sanitizeText(patch.sourceDeviceName) ?? null,
       sourceRole: patch.sourceRole === 'phone' ? 'phone' : 'desktop',
     };
-
-    this.clipboard = nextClipboard;
     await this.persist();
     this.broadcast('clipboard-updated', { clipboard: this.getClipboard() });
     return this.getClipboard();
   }
 
+  // ─── Sessions ─────────────────────────────────────────────
+
   async createSession(input = {}) {
     const now = new Date().toISOString();
     const sessionId = randomUUID();
     const pairingOrigin = normalizeOrigin(input.origin ?? this.settings.publicOrigin);
-    const backendOrigin = normalizeOrigin(input.backendOrigin ?? 'http://127.0.0.1:17619');
+    const backendOrigin = rewriteLoopbackToLan(normalizeOrigin(input.backendOrigin ?? defaultBackendOrigin()));
     const ticket = await createPairingTicket({
       backendOrigin,
       pairingOrigin,
       sessionId,
       transport: input.mode ?? this.settings.preferredMode,
+      ttlMs: QR_TTL_MS,
     });
+    const expiresAt = new Date(Date.now() + QR_TTL_MS).toISOString();
     const session = {
       id: sessionId,
       mode: input.mode ?? this.settings.preferredMode,
       state: SESSION_STATES.pairing,
       createdAt: now,
       updatedAt: now,
+      expiresAt,
       closedAt: null,
+      multiDevice: Boolean(input.multiDevice),
+      maxDevices: Number(input.maxDevices) || (input.multiDevice ? 4 : 1),
       localDevice: {
         name: input.deviceName ?? this.settings.deviceName,
         role: 'desktop',
@@ -159,30 +193,53 @@ export class LocalBackendStore {
       },
       peerDevice: null,
       pairing: {
-        pin: null,
         guestAllowed: false,
         encrypted: false,
         pairingUrl: ticket.pairingUrl,
         qrPayload: ticket.payload,
         verifiedAt: null,
+        acceptedAt: null,
+        attempts: 0,
       },
-      files: {
-        'desktop-to-phone': [],
-        'phone-to-desktop': [],
-      },
+      pendingRequest: null,
+      pendingTransfers: [],
+      files: { 'desktop-to-phone': [], 'phone-to-desktop': [] },
       queue: this.emptyQueue(),
       summary: this.emptySummary(),
       closedReason: null,
       eventCount: 0,
     };
 
-    this.pairingKeys.set(sessionId, {
-      privateKey: ticket.privateKey,
-      publicKey: ticket.publicKey,
-    });
+    this.pairingKeys.set(sessionId, { privateKey: ticket.privateKey, publicKey: ticket.publicKey });
     this.sessions.set(sessionId, session);
     await this.persist();
     this.broadcast('session-created', { session: this.publicSession(session) });
+    return this.publicSession(session);
+  }
+
+  async regenerateSession(sessionId) {
+    const session = this.requireSession(sessionId);
+    if ([SESSION_STATES.closed, SESSION_STATES.completed].includes(session.state)) {
+      throw httpError(409, 'session is closed');
+    }
+    const ticket = await createPairingTicket({
+      backendOrigin: session.pairing.qrPayload?.host
+        ? `http://${session.pairing.qrPayload.host}:${session.pairing.qrPayload.port}`
+        : 'http://127.0.0.1:17619',
+      pairingOrigin: this.settings.publicOrigin,
+      sessionId,
+      transport: session.mode,
+      ttlMs: QR_TTL_MS,
+    });
+    session.pairing.pairingUrl = ticket.pairingUrl;
+    session.pairing.qrPayload = ticket.payload;
+    session.pairing.attempts = 0;
+    session.expiresAt = new Date(Date.now() + QR_TTL_MS).toISOString();
+    session.state = SESSION_STATES.pairing;
+    session.pendingRequest = null;
+    this.pairingKeys.set(sessionId, { privateKey: ticket.privateKey, publicKey: ticket.publicKey });
+    await this.persist();
+    this.broadcast('session-updated', { session: this.publicSession(session) });
     return this.publicSession(session);
   }
 
@@ -191,66 +248,317 @@ export class LocalBackendStore {
   }
 
   getSession(sessionId) {
-    const session = this.requireSession(sessionId);
-    return this.publicSession(session);
+    return this.publicSession(this.requireSession(sessionId));
   }
 
-  async pairSession(sessionId, input = {}) {
+  // Phone scans QR and signals "I want to connect". Creates a pending request.
+  async requestConnect(sessionId, input = {}) {
     const session = this.requireSession(sessionId);
-    if (session.state === SESSION_STATES.closed || session.state === SESSION_STATES.completed) {
-      throw httpError(409, 'session is already closed');
+    this.assertNotExpired(session);
+    if (![SESSION_STATES.pairing, SESSION_STATES.awaitingAccept].includes(session.state)) {
+      throw httpError(409, 'session is not awaiting a connection');
     }
 
     const now = new Date().toISOString();
+    const peerFingerprint = createDeviceFingerprint(input.deviceName ?? 'Phone', input.platform ?? 'ios');
+    session.pendingRequest = {
+      id: randomUUID(),
+      requestedAt: now,
+      peer: {
+        name: input.deviceName ?? 'Phone',
+        platform: input.platform ?? 'ios',
+        transport: input.transport ?? session.mode,
+        icon: sanitizeDeviceIcon(input.deviceIcon) ?? inferDeviceIcon(input.platform),
+        address: input.address ?? null,
+        fingerprint: peerFingerprint,
+      },
+      remotePublicKey: typeof input.remotePublicKey === 'string' ? input.remotePublicKey.trim() : null,
+    };
+    session.state = SESSION_STATES.awaitingAccept;
+    session.updatedAt = now;
+
+    // Auto-accept if device is trusted and policy enabled
+    const trusted = this.trustedDevices.get(peerFingerprint);
+    if (this.settings.autoAcceptTrusted && trusted) {
+      return this.acceptSession(sessionId);
+    }
+
+    await this.persist();
+    this.broadcast('session-connect-requested', { session: this.publicSession(session) });
+    return this.publicSession(session);
+  }
+
+  // Receiver (desktop) accepts the pending connect request → session becomes paired.
+  async acceptSession(sessionId, input = {}) {
+    const session = this.requireSession(sessionId);
+    if (session.state !== SESSION_STATES.awaitingAccept || !session.pendingRequest) {
+      throw httpError(409, 'no pending connection to accept');
+    }
+
+    const now = new Date().toISOString();
+    const peer = session.pendingRequest.peer;
+    const remotePublicKey = session.pendingRequest.remotePublicKey;
+
+    session.peerDevice = peer;
+    session.pairing.verifiedAt = now;
+    session.pairing.acceptedAt = now;
+    session.pairing.encrypted = false;
     session.state = SESSION_STATES.paired;
     session.updatedAt = now;
-    session.peerDevice = {
-      name: input.deviceName ?? 'Phone',
-      platform: input.platform ?? 'ios',
-      transport: input.transport ?? 'wifi',
-      address: input.address ?? null,
-      icon: sanitizeDeviceIcon(input.deviceIcon) ?? inferDeviceIcon(input.platform ?? input.kind),
-    };
-    session.pairing.verifiedAt = now;
-    session.pairing.encrypted = false;
+    session.pendingRequest = null;
 
-    if (typeof input.remotePublicKey === 'string' && input.remotePublicKey.trim()) {
+    if (remotePublicKey) {
       const pairingKey = this.pairingKeys.get(sessionId);
-      if (!pairingKey?.privateKey) {
-        throw httpError(409, 'session encryption is not available for this pairing ticket');
+      if (pairingKey?.privateKey) {
+        const sessionSecret = await deriveSessionSecret({
+          privateKey: pairingKey.privateKey,
+          remotePublicKey,
+          sessionId,
+        });
+        this.sessionSecrets.set(sessionId, sessionSecret);
+        session.pairing.encrypted = true;
       }
+    }
 
-      const sessionSecret = await deriveSessionSecret({
-        privateKey: pairingKey.privateKey,
-        remotePublicKey: input.remotePublicKey.trim(),
-        sessionId,
+    // Track in known devices for reconnect feature
+    if (peer.fingerprint) {
+      this.knownDevices.set(peer.fingerprint, {
+        fingerprint: peer.fingerprint,
+        name: peer.name,
+        platform: peer.platform,
+        icon: peer.icon,
+        lastSeenAt: now,
       });
-      this.sessionSecrets.set(sessionId, sessionSecret);
-      session.pairing.encrypted = true;
+      if (input.trust) {
+        this.trustedDevices.set(peer.fingerprint, {
+          fingerprint: peer.fingerprint,
+          name: peer.name,
+          platform: peer.platform,
+          trustedAt: now,
+          autoAccept: true,
+        });
+      }
     }
 
     session.summary = this.buildSummary(session);
-
     await this.persist();
     this.broadcast('session-paired', { session: this.publicSession(session) });
     return this.publicSession(session);
+  }
+
+  async declineSession(sessionId, input = {}) {
+    const session = this.requireSession(sessionId);
+    if (session.state !== SESSION_STATES.awaitingAccept) {
+      throw httpError(409, 'no pending request to decline');
+    }
+    const now = new Date().toISOString();
+    session.state = SESSION_STATES.failed;
+    session.closedAt = now;
+    session.updatedAt = now;
+    session.closedReason = input.reason ?? 'declined';
+    session.pendingRequest = null;
+    await this.persist();
+    this.broadcast('session-declined', { session: this.publicSession(session) });
+    return this.publicSession(session);
+  }
+
+  // Legacy pair endpoint kept for backwards compatibility — same as requestConnect + acceptSession when no trust gate.
+  async pairSession(sessionId, input = {}) {
+    await this.requestConnect(sessionId, input);
+    return this.acceptSession(sessionId, input);
   }
 
   async closeSession(sessionId, input = {}) {
     const session = this.requireSession(sessionId);
     const now = new Date().toISOString();
     const hasFiles = this.countFiles(session) > 0;
-
     session.state = hasFiles ? SESSION_STATES.completed : SESSION_STATES.closed;
     session.updatedAt = now;
     session.closedAt = now;
     session.closedReason = input.reason ?? null;
     session.summary = this.buildSummary(session);
-
     await this.persist();
     this.broadcast('session-closed', { session: this.publicSession(session) });
     return this.publicSession(session);
   }
+
+  // ─── Pending transfers (accept-some flow) ────────────────
+
+  async requestTransferBatch(sessionId, input = {}) {
+    const session = this.requireSession(sessionId);
+    if (![SESSION_STATES.paired, SESSION_STATES.transferring].includes(session.state)) {
+      throw httpError(409, 'session is not paired');
+    }
+    const files = Array.isArray(input.files) ? input.files : [];
+    if (!files.length) throw httpError(400, 'files are required');
+
+    const batch = {
+      id: randomUUID(),
+      direction: this.requireDirection(input.direction ?? 'desktop-to-phone'),
+      sourceDeviceName: sanitizeText(input.deviceName) ?? null,
+      requestedAt: new Date().toISOString(),
+      files: files.map((file) => ({
+        id: randomUUID(),
+        name: sanitizeFileName(file.name),
+        size: Number(file.size) || 0,
+        mimeType: sanitizeContentType(file.mimeType),
+        relativePath: sanitizeRelativePath(file.relativePath, file.name),
+        lastModified: Number.isFinite(Number(file.lastModified)) ? Number(file.lastModified) : null,
+      })),
+    };
+
+    session.pendingTransfers = session.pendingTransfers ?? [];
+    session.pendingTransfers.push(batch);
+    session.updatedAt = batch.requestedAt;
+
+    await this.persist();
+    this.broadcast('transfer-requested', { sessionId, batch });
+    return batch;
+  }
+
+  async acceptTransferBatch(sessionId, batchId, input = {}) {
+    const session = this.requireSession(sessionId);
+    const batches = session.pendingTransfers ?? [];
+    const idx = batches.findIndex((b) => b.id === batchId);
+    if (idx === -1) throw httpError(404, 'transfer batch not found');
+    const acceptedIds = Array.isArray(input.fileIds) && input.fileIds.length
+      ? new Set(input.fileIds)
+      : null;
+    const batch = batches[idx];
+    const accepted = batch.files.filter((file) => !acceptedIds || acceptedIds.has(file.id));
+    batches.splice(idx, 1);
+    session.pendingTransfers = batches;
+    session.updatedAt = new Date().toISOString();
+    await this.persist();
+    this.broadcast('transfer-accepted', { sessionId, batchId, fileIds: accepted.map((f) => f.id) });
+    return { batchId, accepted: accepted.map((f) => f.id) };
+  }
+
+  async declineTransferBatch(sessionId, batchId, input = {}) {
+    const session = this.requireSession(sessionId);
+    const batches = session.pendingTransfers ?? [];
+    const idx = batches.findIndex((b) => b.id === batchId);
+    if (idx === -1) throw httpError(404, 'transfer batch not found');
+    batches.splice(idx, 1);
+    session.pendingTransfers = batches;
+    session.updatedAt = new Date().toISOString();
+    await this.persist();
+    this.broadcast('transfer-declined', { sessionId, batchId, reason: input.reason ?? null });
+    return { batchId };
+  }
+
+  // ─── Trusted / known devices ──────────────────────────────
+
+  listTrustedDevices() {
+    return [...this.trustedDevices.values()];
+  }
+
+  listKnownDevices() {
+    return [...this.knownDevices.values()].sort((a, b) => (b.lastSeenAt ?? '').localeCompare(a.lastSeenAt ?? ''));
+  }
+
+  async setTrustedDevice(fingerprint, patch = {}) {
+    const existing = this.trustedDevices.get(fingerprint) ?? { fingerprint };
+    const next = {
+      ...existing,
+      ...patch,
+      fingerprint,
+      trustedAt: existing.trustedAt ?? new Date().toISOString(),
+      autoAccept: patch.autoAccept ?? existing.autoAccept ?? true,
+    };
+    this.trustedDevices.set(fingerprint, next);
+    await this.persist();
+    this.broadcast('trusted-updated', { trustedDevices: this.listTrustedDevices() });
+    return next;
+  }
+
+  async removeTrustedDevice(fingerprint) {
+    this.trustedDevices.delete(fingerprint);
+    await this.persist();
+    this.broadcast('trusted-updated', { trustedDevices: this.listTrustedDevices() });
+    return { ok: true };
+  }
+
+  // ─── Guest mode ───────────────────────────────────────────
+
+  // LAN-routable origin (http://192.168.x.x:17619) for clients that need to share URLs
+  // with phones / other devices on the network.
+  lanOrigin() {
+    const lan = pickLanIPv4();
+    const port = process.env.DROPBEAM_BACKEND_PORT ?? '17619';
+    return lan ? `http://${lan}:${port}` : null;
+  }
+
+  async createGuestShare(input = {}) {
+    const id = randomUUID();
+    const token = randomUUID().replace(/-/g, '').slice(0, 20);
+    const ttlMs = Number(input.ttlMs) || GUEST_TTL_MS;
+    const maxUses = Number(input.maxUses) || 1;
+    const share = {
+      id,
+      token,
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + ttlMs).toISOString(),
+      maxUses,
+      uses: 0,
+      files: [],
+    };
+    this.guestShares.set(token, share);
+    await this.persist();
+    return share;
+  }
+
+  async addGuestFile(token, file, requestStream) {
+    const share = this.guestShares.get(token);
+    if (!share) throw httpError(404, 'share not found');
+    const id = randomUUID();
+    const storagePath = join(this.guestDir, `${id}.bin`);
+    await mkdir(dirname(storagePath), { recursive: true });
+    const dest = createWriteStream(storagePath);
+    const counter = new ByteCounterStream();
+    await pipeline(requestStream, counter, dest);
+    const record = {
+      id,
+      name: sanitizeFileName(file.name ?? 'file.bin'),
+      size: counter.bytesWritten,
+      mimeType: sanitizeContentType(file.mimeType ?? 'application/octet-stream'),
+      storagePath: relativeToData(this.dataDir, storagePath),
+      addedAt: new Date().toISOString(),
+    };
+    share.files.push(record);
+    await this.persist();
+    return record;
+  }
+
+  getGuestShare(token) {
+    const share = this.guestShares.get(token);
+    if (!share) return null;
+    if (new Date(share.expiresAt).getTime() < Date.now()) {
+      this.guestShares.delete(token);
+      return null;
+    }
+    if (share.uses >= share.maxUses) {
+      return null;
+    }
+    return share;
+  }
+
+  async incrementGuestUse(token) {
+    const share = this.guestShares.get(token);
+    if (!share) return;
+    share.uses += 1;
+    await this.persist();
+  }
+
+  guestFilePath(token, fileId) {
+    const share = this.getGuestShare(token);
+    if (!share) return null;
+    const file = share.files.find((f) => f.id === fileId);
+    if (!file) return null;
+    return { share, file, path: resolve(this.dataDir, file.storagePath) };
+  }
+
+  // ─── Uploads & files ──────────────────────────────────────
 
   listFiles(sessionId, direction) {
     const session = this.requireSession(sessionId);
@@ -263,8 +571,7 @@ export class LocalBackendStore {
   }
 
   getUpload(uploadId) {
-    const upload = this.requireUpload(uploadId);
-    return this.publicUpload(upload);
+    return this.publicUpload(this.requireUpload(uploadId));
   }
 
   getLocalDiscoveryDevice() {
@@ -304,8 +611,8 @@ export class LocalBackendStore {
     const existing = [...this.uploads.values()].find(
       (upload) => upload.status === 'pending' && upload.fingerprint === fingerprint,
     );
-
     if (existing) {
+      // Resume: just return the existing upload pointer so the client picks up at nextChunk.
       return this.publicUpload(existing);
     }
 
@@ -351,12 +658,10 @@ export class LocalBackendStore {
       await drainRequest(request);
       throw httpError(409, 'upload is no longer writable');
     }
-
     if (chunkIndex < upload.nextChunk) {
       await drainRequest(request);
       return this.publicUpload(upload);
     }
-
     if (chunkIndex > upload.nextChunk) {
       await drainRequest(request);
       throw httpError(409, `chunk ${chunkIndex} cannot be accepted before chunk ${upload.nextChunk}`);
@@ -381,10 +686,7 @@ export class LocalBackendStore {
 
   async completeUpload(uploadId) {
     const upload = this.requireUpload(uploadId);
-    if (upload.status !== 'pending') {
-      throw httpError(409, 'upload is already finalized');
-    }
-
+    if (upload.status !== 'pending') throw httpError(409, 'upload is already finalized');
     if (upload.uploadedBytes < upload.size || upload.nextChunk < upload.totalChunks) {
       throw httpError(409, 'upload is incomplete and cannot be finalized');
     }
@@ -421,11 +723,7 @@ export class LocalBackendStore {
       durationMs: calculateDurationMs(upload.startedAt, now),
     };
 
-    await writeJson(metaPath, {
-      ...record,
-      storagePath: record.storagePath,
-      metaPath: record.metaPath,
-    });
+    await writeJson(metaPath, { ...record, storagePath: record.storagePath, metaPath: record.metaPath });
 
     session.files[upload.direction].push(record);
     session.state = SESSION_STATES.transferring;
@@ -450,41 +748,22 @@ export class LocalBackendStore {
 
   async downloadFile(fileId) {
     const entry = this.fileIndex.get(fileId);
-    if (!entry) {
-      throw httpError(404, 'file not found');
-    }
-
+    if (!entry) throw httpError(404, 'file not found');
     const session = this.requireSession(entry.sessionId);
     const file = session.files[entry.direction].find((item) => item.id === fileId);
-    if (!file) {
-      throw httpError(404, 'file not found');
-    }
-
+    if (!file) throw httpError(404, 'file not found');
     await this.markFileDownloaded(session, file);
-
-    return {
-      file: this.publicFile(file),
-      path: resolve(this.dataDir, file.storagePath),
-    };
+    return { file: this.publicFile(file), path: resolve(this.dataDir, file.storagePath) };
   }
 
   async downloadSecureFile(fileId, sessionId) {
     const entry = this.fileIndex.get(fileId);
-    if (!entry || entry.sessionId !== sessionId) {
-      throw httpError(404, 'file not found');
-    }
-
+    if (!entry || entry.sessionId !== sessionId) throw httpError(404, 'file not found');
     const session = this.requireSession(entry.sessionId);
     const file = session.files[entry.direction].find((item) => item.id === fileId);
-    if (!file) {
-      throw httpError(404, 'file not found');
-    }
-
+    if (!file) throw httpError(404, 'file not found');
     const sessionSecret = this.sessionSecrets.get(sessionId);
-    if (!sessionSecret) {
-      throw httpError(409, 'session encryption key is not available');
-    }
-
+    if (!sessionSecret) throw httpError(409, 'session encryption key is not available');
     const plaintext = new Uint8Array(await readFile(resolve(this.dataDir, file.storagePath)));
     const payload = await encryptTransferBuffer({
       chunkIndex: 0,
@@ -493,9 +772,7 @@ export class LocalBackendStore {
       rawKey: sessionSecret.rawKey,
       sessionId,
     });
-
     await this.markFileDownloaded(session, file);
-
     return {
       file: this.publicFile(file),
       encrypted: true,
@@ -505,69 +782,67 @@ export class LocalBackendStore {
     };
   }
 
+  // ─── Dashboard / history ──────────────────────────────────
+
   getDashboard() {
+    this.pruneExpiredSessions();
     const sessions = this.sortedSessions();
-    const activeSessions = sessions.filter((session) => !['closed', 'completed', 'failed'].includes(session.state));
-    const history = sessions.filter((session) => ['closed', 'completed', 'failed'].includes(session.state));
+    const activeSessions = sessions.filter((s) => !['closed', 'completed', 'failed'].includes(s.state));
+    const history = sessions.filter((s) => ['closed', 'completed', 'failed'].includes(s.state));
     const totals = sessions.reduce(
-      (accumulator, session) => {
-        accumulator.sessions += 1;
-        accumulator.files += this.countFiles(session);
-        accumulator.bytes += session.summary.totalBytes;
-        if (session.state === SESSION_STATES.paired) {
-          accumulator.paired += 1;
-        }
-        if (session.state === SESSION_STATES.transferring) {
-          accumulator.transferring += 1;
-        }
-        if (session.state === SESSION_STATES.completed) {
-          accumulator.completed += 1;
-        }
-        return accumulator;
+      (acc, s) => {
+        acc.sessions += 1;
+        acc.files += this.countFiles(s);
+        acc.bytes += s.summary.totalBytes;
+        if (s.state === SESSION_STATES.paired) acc.paired += 1;
+        if (s.state === SESSION_STATES.transferring) acc.transferring += 1;
+        if (s.state === SESSION_STATES.completed) acc.completed += 1;
+        if (s.state === SESSION_STATES.awaitingAccept) acc.pending += 1;
+        return acc;
       },
-      { sessions: 0, files: 0, bytes: 0, paired: 0, transferring: 0, completed: 0 },
+      { sessions: 0, files: 0, bytes: 0, paired: 0, transferring: 0, completed: 0, pending: 0 },
     );
 
     return {
       settings: this.getSettings(),
       clipboard: this.getClipboard(),
       activeUploads: [...this.uploads.values()]
-        .map((upload) => this.publicUpload(upload))
-        .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)),
+        .map((u) => this.publicUpload(u))
+        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
       totals,
-      activeSessions: activeSessions.map((session) => this.publicSession(session)),
-      history: history.slice(0, 20).map((session) => this.publicSession(session)),
+      activeSessions: activeSessions.map((s) => this.publicSession(s)),
+      history: history.slice(0, 20).map((s) => this.publicSession(s)),
+      trustedDevices: this.listTrustedDevices(),
+      knownDevices: this.listKnownDevices(),
+      guestShares: [...this.guestShares.values()].map((s) => ({ ...s, files: s.files.length })),
     };
   }
 
   getHistory(query = '') {
-    const normalizedQuery = sanitizeSearchQuery(query);
-
+    const normalized = sanitizeSearchQuery(query);
     return this.sortedSessions()
-      .filter((session) => ['closed', 'completed', 'failed'].includes(session.state))
-      .filter((session) => this.matchesHistoryQuery(session, normalizedQuery))
-      .map((session) => this.sessionHistoryEntry(session));
+      .filter((s) => ['closed', 'completed', 'failed'].includes(s.state))
+      .filter((s) => this.matchesHistoryQuery(s, normalized))
+      .map((s) => this.sessionHistoryEntry(s));
   }
+
+  // ─── Persistence ──────────────────────────────────────────
 
   async persist() {
     const snapshot = {
-      version: 1,
+      version: 2,
       settings: this.settings,
       clipboard: this.clipboard,
       sessions: Object.fromEntries(
-        [...this.sessions.entries()].map(([sessionId, session]) => [
-          sessionId,
-          this.persistedSession(session),
-        ]),
+        [...this.sessions.entries()].map(([id, s]) => [id, this.persistedSession(s)]),
       ),
-      uploads: Object.fromEntries(
-        [...this.uploads.entries()].map(([uploadId, upload]) => [uploadId, upload]),
-      ),
+      uploads: Object.fromEntries([...this.uploads.entries()].map(([id, u]) => [id, u])),
+      trustedDevices: Object.fromEntries(this.trustedDevices),
+      knownDevices: Object.fromEntries(this.knownDevices),
+      guestShares: Object.fromEntries(this.guestShares),
       updatedAt: new Date().toISOString(),
     };
-
     await writeJson(this.stateFile, snapshot);
-    await writeJson(join(this.snapshotsDir, `state-${Date.now()}.json`), snapshot);
   }
 
   rebuildFileIndex() {
@@ -583,12 +858,35 @@ export class LocalBackendStore {
     }
   }
 
-  requireSession(sessionId) {
-    const session = this.sessions.get(sessionId);
-    if (!session) {
-      throw httpError(404, `session ${sessionId} not found`);
+  pruneExpiredSessions() {
+    const now = Date.now();
+    for (const session of this.sessions.values()) {
+      if (
+        session.expiresAt &&
+        session.state === SESSION_STATES.pairing &&
+        new Date(session.expiresAt).getTime() < now
+      ) {
+        session.state = SESSION_STATES.failed;
+        session.closedReason = 'expired';
+        session.closedAt = new Date().toISOString();
+      }
     }
-    return session;
+  }
+
+  assertNotExpired(session) {
+    if (
+      session.expiresAt &&
+      session.state === SESSION_STATES.pairing &&
+      new Date(session.expiresAt).getTime() < Date.now()
+    ) {
+      throw httpError(410, 'session QR has expired');
+    }
+  }
+
+  requireSession(sessionId) {
+    const s = this.sessions.get(sessionId);
+    if (!s) throw httpError(404, `session ${sessionId} not found`);
+    return s;
   }
 
   requireDirection(direction) {
@@ -599,12 +897,12 @@ export class LocalBackendStore {
   }
 
   requireUpload(uploadId) {
-    const upload = this.uploads.get(uploadId);
-    if (!upload) {
-      throw httpError(404, `upload ${uploadId} not found`);
-    }
-    return upload;
+    const u = this.uploads.get(uploadId);
+    if (!u) throw httpError(404, `upload ${uploadId} not found`);
+    return u;
   }
+
+  // ─── Public projections ───────────────────────────────────
 
   publicSession(session) {
     return structuredClone({
@@ -612,23 +910,23 @@ export class LocalBackendStore {
       localDevice: this.publicDevice(session.localDevice, 'desktop'),
       peerDevice: session.peerDevice ? this.publicDevice(session.peerDevice, 'phone') : session.peerDevice,
       pairing: {
-        pin: session.pairing.pin,
         ticket: {
           sessionId: session.id,
-          pin: null,
           qrValue: session.pairing.pairingUrl,
           pairingUrl: session.pairing.pairingUrl,
-          guestAllowed: false,
+          expiresAt: session.expiresAt,
         },
-        guestAllowed: false,
         encrypted: Boolean(session.pairing.encrypted),
         verifiedAt: session.pairing.verifiedAt ?? null,
+        acceptedAt: session.pairing.acceptedAt ?? null,
       },
+      pendingRequest: session.pendingRequest ?? null,
+      pendingTransfers: session.pendingTransfers ?? [],
       summary: this.buildSummary(session),
       queue: this.buildQueue(session),
       files: {
-        'desktop-to-phone': session.files['desktop-to-phone'].map((file) => this.publicFile(file)),
-        'phone-to-desktop': session.files['phone-to-desktop'].map((file) => this.publicFile(file)),
+        'desktop-to-phone': session.files['desktop-to-phone'].map((f) => this.publicFile(f)),
+        'phone-to-desktop': session.files['phone-to-desktop'].map((f) => this.publicFile(f)),
       },
     });
   }
@@ -647,7 +945,9 @@ export class LocalBackendStore {
       lastModified,
       completedAt,
       startedAt,
-      progressPercent: upload.size > 0 ? Math.max(0, Math.min(100, Math.round((upload.uploadedBytes / upload.size) * 100))) : 0,
+      progressPercent: upload.size > 0
+        ? Math.max(0, Math.min(100, Math.round((upload.uploadedBytes / upload.size) * 100)))
+        : 0,
     });
   }
 
@@ -657,14 +957,8 @@ export class LocalBackendStore {
   }
 
   publicDevice(device, fallbackIcon) {
-    if (!device) {
-      return device;
-    }
-
-    return {
-      ...device,
-      icon: sanitizeDeviceIcon(device.icon) ?? fallbackIcon,
-    };
+    if (!device) return device;
+    return { ...device, icon: sanitizeDeviceIcon(device.icon) ?? fallbackIcon };
   }
 
   persistedSession(session) {
@@ -685,23 +979,19 @@ export class LocalBackendStore {
       createdAt: session.createdAt,
       updatedAt: session.updatedAt,
       closedAt: session.closedAt,
-      pin: null,
       localDevice: this.publicDevice(session.localDevice, 'desktop'),
       peerDevice: session.peerDevice ? this.publicDevice(session.peerDevice, 'phone') : session.peerDevice,
       summary: this.buildSummary(session),
       fileCount: this.countFiles(session),
-      files: this.allFiles(session).map((file) => this.publicFile(file)),
+      files: this.allFiles(session).map((f) => this.publicFile(f)),
     };
   }
 
   buildSummary(session) {
     const files = this.allFiles(session);
-    const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
-    const completedFiles = files.filter((file) => file.status === 'downloaded').length;
-    const completedBytes = files
-      .filter((file) => file.status === 'downloaded')
-      .reduce((sum, file) => sum + file.size, 0);
-
+    const totalBytes = files.reduce((s, f) => s + f.size, 0);
+    const completedFiles = files.filter((f) => f.status === 'downloaded').length;
+    const completedBytes = files.filter((f) => f.status === 'downloaded').reduce((s, f) => s + f.size, 0);
     return {
       totalFiles: files.length,
       completedFiles,
@@ -714,21 +1004,20 @@ export class LocalBackendStore {
   }
 
   buildQueue(session) {
-    const items = this.allFiles(session).map((file) => ({
-      id: file.id,
-      name: file.name,
-      relativePath: file.relativePath ?? null,
-      direction: file.direction,
-      status: file.status,
-      size: file.size,
-      progress: file.status === 'downloaded' ? 100 : 0,
+    const items = this.allFiles(session).map((f) => ({
+      id: f.id,
+      name: f.name,
+      relativePath: f.relativePath ?? null,
+      direction: f.direction,
+      status: f.status,
+      size: f.size,
+      progress: f.status === 'downloaded' ? 100 : 0,
     }));
-
     return {
       items,
       totalFiles: items.length,
-      completedFiles: items.filter((item) => item.status === 'downloaded').length,
-      totalBytes: items.reduce((sum, item) => sum + item.size, 0),
+      completedFiles: items.filter((i) => i.status === 'downloaded').length,
+      totalBytes: items.reduce((s, i) => s + i.size, 0),
     };
   }
 
@@ -736,23 +1025,19 @@ export class LocalBackendStore {
     return this.allFiles(session).length;
   }
 
-  matchesHistoryQuery(session, normalizedQuery) {
-    if (!normalizedQuery) {
-      return true;
-    }
-
-    const haystack = [
+  matchesHistoryQuery(session, normalized) {
+    if (!normalized) return true;
+    const hay = [
       session.id,
       session.localDevice?.name,
       session.peerDevice?.name,
       session.peerDevice?.platform,
-      ...this.allFiles(session).flatMap((file) => [file.name, file.relativePath, file.sourceDeviceName]),
+      ...this.allFiles(session).flatMap((f) => [f.name, f.relativePath, f.sourceDeviceName]),
     ]
       .filter(Boolean)
       .join(' ')
       .toLowerCase();
-
-    return haystack.includes(normalizedQuery);
+    return hay.includes(normalized);
   }
 
   allFiles(session) {
@@ -760,22 +1045,15 @@ export class LocalBackendStore {
   }
 
   sortedSessions() {
-    return [...this.sessions.values()].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+    return [...this.sessions.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
 
   broadcast(type, payload) {
-    if (typeof this.emit === 'function') {
-      this.emit(type, payload);
-    }
+    if (typeof this.emit === 'function') this.emit(type, payload);
   }
 
   emptyQueue() {
-    return {
-      items: [],
-      totalFiles: 0,
-      completedFiles: 0,
-      totalBytes: 0,
-    };
+    return { items: [], totalFiles: 0, completedFiles: 0, totalBytes: 0 };
   }
 
   emptySummary() {
@@ -791,12 +1069,7 @@ export class LocalBackendStore {
   }
 
   emptyClipboard() {
-    return {
-      text: '',
-      updatedAt: null,
-      sourceDeviceName: null,
-      sourceRole: null,
-    };
+    return { text: '', updatedAt: null, sourceDeviceName: null, sourceRole: null };
   }
 
   async receivePlainChunk(request, destinationPath) {
@@ -808,35 +1081,24 @@ export class LocalBackendStore {
 
   async receiveEncryptedChunk(upload, requestChunkIndex, request, destinationPath) {
     const body = await readJson(request);
-    if (!body?.encrypted || !body?.chunk) {
-      throw httpError(400, 'encrypted upload chunk payload is invalid');
-    }
-
+    if (!body?.encrypted || !body?.chunk) throw httpError(400, 'encrypted upload chunk payload is invalid');
     const sessionSecret = this.sessionSecrets.get(upload.sessionId);
-    if (!sessionSecret) {
-      throw httpError(409, 'session encryption key is not available');
-    }
-
+    if (!sessionSecret) throw httpError(409, 'session encryption key is not available');
     const plaintext = await decryptTransferChunk({
       chunk: body.chunk,
       fileId: body.fileId ?? upload.id,
       rawKey: sessionSecret.rawKey,
       sessionId: upload.sessionId,
     });
-
     if (body.chunk.chunkIndex !== requestChunkIndex) {
       throw httpError(409, 'encrypted chunk index did not match the upload slot');
     }
-
     await appendFile(destinationPath, Buffer.from(plaintext));
     return plaintext.byteLength;
   }
 
   async markFileDownloaded(session, file) {
-    if (file.downloadedAt) {
-      return;
-    }
-
+    if (file.downloadedAt) return;
     file.downloadedAt = new Date().toISOString();
     file.status = 'downloaded';
     session.updatedAt = file.downloadedAt;
@@ -864,10 +1126,9 @@ class ByteCounterStream extends Transform {
     super();
     this.bytesWritten = 0;
   }
-
-  _transform(chunk, encoding, callback) {
+  _transform(chunk, _encoding, cb) {
     this.bytesWritten += chunk.length;
-    callback(null, chunk);
+    cb(null, chunk);
   }
 }
 
@@ -880,44 +1141,30 @@ async function writeJson(path, value) {
 
 function sanitizeFileName(value) {
   const candidate = sanitizeText(value) ?? 'incoming.bin';
-  const normalized = candidate
-    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_')
-    .replace(/\s+/g, ' ')
-    .trim();
+  const normalized = candidate.replace(/[<>:"/\\|?*]/g, '_').replace(/\s+/g, ' ').trim();
   return normalized || 'incoming.bin';
 }
 
 function sanitizeContentType(value) {
-  const candidate = sanitizeText(value);
-  return candidate || 'application/octet-stream';
+  return sanitizeText(value) || 'application/octet-stream';
 }
 
 function sanitizeText(value) {
-  if (typeof value !== 'string') {
-    return null;
-  }
-
+  if (typeof value !== 'string') return null;
   const trimmed = value.trim();
   return trimmed || null;
 }
 
 function sanitizeRelativePath(value, fallbackName) {
   const candidate = sanitizeText(value);
-  if (!candidate) {
-    return null;
-  }
-
+  if (!candidate) return null;
   const normalized = candidate
     .split(/[\\/]+/)
-    .map((segment) => segment.trim())
+    .map((seg) => seg.trim())
     .filter(Boolean)
-    .map((segment) => segment.replace(/[<>:"|?*\u0000-\u001f]/g, '_'))
-    .filter((segment) => segment !== '.' && segment !== '..');
-
-  if (!normalized.length) {
-    return fallbackName ?? null;
-  }
-
+    .map((seg) => seg.replace(/[<>:"|?*]/g, '_'))
+    .filter((seg) => seg !== '.' && seg !== '..');
+  if (!normalized.length) return fallbackName ?? null;
   return normalized.join('/');
 }
 
@@ -930,60 +1177,133 @@ function sanitizeDeviceIcon(value) {
 }
 
 function sanitizePositiveNumber(value, fieldName) {
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric) || numeric < 0) {
-    throw httpError(400, `${fieldName} must be a non-negative number`);
-  }
-
-  return numeric;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) throw httpError(400, `${fieldName} must be a non-negative number`);
+  return n;
 }
 
 function sanitizeChunkSize(value) {
-  const numeric = sanitizePositiveNumber(value, 'chunkSize');
-  if (numeric <= 0) {
-    throw httpError(400, 'chunkSize must be greater than zero');
-  }
-
-  return Math.min(Math.max(Math.floor(numeric), 64 * 1024), 8 * 1024 * 1024);
+  const n = sanitizePositiveNumber(value, 'chunkSize');
+  if (n <= 0) throw httpError(400, 'chunkSize must be greater than zero');
+  return Math.min(Math.max(Math.floor(n), 64 * 1024), 8 * 1024 * 1024);
 }
 
 function normalizeOrigin(value) {
-  if (typeof value !== 'string' || !value.trim()) {
-    return 'http://127.0.0.1:17619';
-  }
-
+  if (typeof value !== 'string' || !value.trim()) return 'http://127.0.0.1:17619';
   return value.replace(/\/+$/, '');
 }
 
-async function drainRequest(request) {
-  for await (const _chunk of request) {
-    // Intentionally discard already-received request bodies.
+// Replace 127.0.0.1 / localhost in an origin URL with the host's LAN IP so QR codes
+// generated by the desktop point at an address the phone can actually reach.
+function rewriteLoopbackToLan(origin) {
+  if (typeof origin !== 'string' || !origin) return origin;
+  try {
+    const url = new URL(origin);
+    if (url.hostname === '127.0.0.1' || url.hostname === 'localhost' || url.hostname === '::1') {
+      const lan = pickLanIPv4();
+      if (lan) {
+        url.hostname = lan;
+        return url.toString().replace(/\/+$/, '');
+      }
+    }
+    return origin;
+  } catch {
+    return origin;
   }
+}
+
+function pickLanIPv4() {
+  return listLanIPv4()[0] ?? null;
+}
+
+// Return all non-loopback IPv4 addresses sorted with the most likely physical Wi-Fi/Ethernet
+// adapter first. VMware / Hyper-V / WSL virtual adapters (192.168.x where x is large like 193)
+// and adapter names containing "Virtual", "VMware", "Hyper-V", "WSL", "VPN" are deprioritized.
+function listLanIPv4() {
+  try {
+    const interfaces = networkInterfaces();
+    const candidates = [];
+    for (const name of Object.keys(interfaces)) {
+      const lowerName = name.toLowerCase();
+      const isVirtual = /(virtual|vmware|hyper-?v|wsl|vpn|loopback|vethernet)/i.test(lowerName);
+      for (const iface of interfaces[name] ?? []) {
+        if (iface.family !== 'IPv4' || iface.internal || !iface.address) continue;
+        // Subnet preference: 192.168.0/1.x are typical home routers; 10.x corporate;
+        // 172.16-31 less common; everything else lower.
+        let subnetScore = 9;
+        const m = iface.address.match(/^192\.168\.(\d+)\./);
+        if (m) {
+          const second = Number(m[1]);
+          // 192.168.0 and 192.168.1 are the canonical home subnets — strongly prefer.
+          subnetScore = second === 0 || second === 1 ? 0 : second < 10 ? 1 : 5;
+        } else if (/^10\./.test(iface.address)) {
+          subnetScore = 2;
+        } else if (/^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(iface.address)) {
+          subnetScore = 3;
+        }
+        candidates.push({
+          address: iface.address,
+          name,
+          isVirtual,
+          priority: (isVirtual ? 100 : 0) + subnetScore,
+        });
+      }
+    }
+    candidates.sort((a, b) => a.priority - b.priority);
+    return candidates.map((c) => c.address);
+  } catch {
+    return [];
+  }
+}
+
+// Pick the first non-loopback IPv4 LAN address so QR codes contain a URL the phone can actually reach.
+// Falls back to 127.0.0.1 if no LAN address is available (e.g. fully offline).
+function defaultBackendOrigin() {
+  const port = process.env.DROPBEAM_BACKEND_PORT ?? '17619';
+  try {
+    const interfaces = networkInterfaces();
+    const candidates = [];
+    for (const name of Object.keys(interfaces)) {
+      for (const iface of interfaces[name] ?? []) {
+        if (iface.family === 'IPv4' && !iface.internal && iface.address) {
+          // Prefer common private LAN ranges first
+          const priority = /^192\.168\./.test(iface.address)
+            ? 0
+            : /^10\./.test(iface.address)
+              ? 1
+              : /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(iface.address)
+                ? 2
+                : 3;
+          candidates.push({ address: iface.address, priority });
+        }
+      }
+    }
+    candidates.sort((a, b) => a.priority - b.priority);
+    if (candidates.length > 0) {
+      return `http://${candidates[0].address}:${port}`;
+    }
+  } catch {
+    // Fall through to loopback.
+  }
+  return `http://127.0.0.1:${port}`;
+}
+
+async function drainRequest(request) {
+  // eslint-disable-next-line no-unused-vars
+  for await (const _chunk of request) {}
 }
 
 async function readJson(request) {
   const chunks = [];
-
-  for await (const chunk of request) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  }
-
-  if (!chunks.length) {
-    return {};
-  }
-
+  for await (const chunk of request) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  if (!chunks.length) return {};
   const text = Buffer.concat(chunks).toString('utf8').trim();
-  if (!text) {
-    return {};
-  }
-
-  return JSON.parse(text);
+  return text ? JSON.parse(text) : {};
 }
 
 async function hashFile(path) {
   const hash = createHash('sha256');
-  const source = await readFile(path);
-  hash.update(source);
+  hash.update(await readFile(path));
   return hash.digest('hex');
 }
 
@@ -997,6 +1317,10 @@ function createUploadFingerprint(input) {
     input.lastModified ?? '',
     input.sourceDeviceName ?? '',
   ].join('::');
+}
+
+function createDeviceFingerprint(name, platform) {
+  return `${platform ?? 'unknown'}:${(name ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
 }
 
 function inferDeviceIcon(value) {
@@ -1019,22 +1343,16 @@ function inferDeviceIcon(value) {
 }
 
 function calculateDurationMs(startedAt, endedAt = new Date().toISOString()) {
-  const started = new Date(startedAt).getTime();
-  const ended = new Date(endedAt).getTime();
-  if (!Number.isFinite(started) || !Number.isFinite(ended) || ended <= started) {
-    return null;
-  }
-
-  return ended - started;
+  const a = new Date(startedAt).getTime();
+  const b = new Date(endedAt).getTime();
+  if (!Number.isFinite(a) || !Number.isFinite(b) || b <= a) return null;
+  return b - a;
 }
 
-function calculateAverageBytesPerSecond(startedAt, uploadedBytes) {
-  const durationMs = calculateDurationMs(startedAt);
-  if (!durationMs || durationMs <= 0) {
-    return null;
-  }
-
-  return Math.round((uploadedBytes / durationMs) * 1000);
+function calculateAverageBytesPerSecond(startedAt, bytes) {
+  const ms = calculateDurationMs(startedAt);
+  if (!ms || ms <= 0) return null;
+  return Math.round((bytes / ms) * 1000);
 }
 
 function relativeToData(dataDir, absolutePath) {

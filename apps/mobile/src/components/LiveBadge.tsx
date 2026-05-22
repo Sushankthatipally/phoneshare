@@ -6,7 +6,7 @@ type Tone = 'blue' | 'amber' | 'green' | 'slate';
 
 export function LiveBadge({ children, tone = 'blue' }: PropsWithChildren<{ tone?: Tone }>) {
   return (
-    <View style={{ ...styles.badge, ...toneStyles[tone] }}>
+    <View style={[styles.badge, toneStyles[tone]]}>
       <Text style={styles.text}>{children}</Text>
     </View>
   );
@@ -14,9 +14,9 @@ export function LiveBadge({ children, tone = 'blue' }: PropsWithChildren<{ tone?
 
 const styles = {
   badge: {
-    alignItems: 'center',
+    alignItems: 'center' as const,
+    alignSelf: 'flex-start' as const,
     borderRadius: 999,
-    borderStyle: 'solid' as const,
     borderWidth: 1,
     paddingHorizontal: 12,
     paddingVertical: 6,
@@ -24,7 +24,7 @@ const styles = {
   text: {
     color: '#dfefff',
     fontSize: 11,
-    fontWeight: 800,
+    fontWeight: '800' as const,
     letterSpacing: 0.8,
     textTransform: 'uppercase' as const,
   },

@@ -3,6 +3,8 @@ node_modules/
 dist/
 target/
 target-tauri/
+apps/desktop/src-tauri/binaries/
+packages/local-backend/dist/
 .turbo/
 .vite/
 coverage/
@@ -15,6 +17,10 @@ pnpm-debug.log*
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+*.dump
+*.dmp
+*.tmp
+*.temp
 
 .codex-temp/
 packages/local-backend/data/
@@ -23,8 +29,45 @@ apps/*/src-tauri/gen/
 *.log
 *.pid
 
+# Local screenshots / captures
+/dropbeam-*.png
+/scrn.png
+/screenshot*.png
+/*-screenshot*.png
+
+# Local timestamped prompt/transcript dumps
+# **/20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]-*.txt
+
 docs/
 PLAN*.md
 *COMPETITIVE_PLAN*.md
 
 skills/
+
+# Android / Gradle build outputs (generated each build)
+**/build/
+**/.gradle/
+**/.kotlin/
+apps/mobile/android/local.properties
+apps/mobile/android/app/release/
+apps/mobile/android/captures/
+apps/mobile/android/.idea/
+
+# Expo / Metro caches
+.expo/
+.metro-cache/
+
+# Editor / IDE
+.vscode/
+.idea/
+*.iml
+
+# OS junk
+desktop.ini
+
+# Local test bundles
+testbundle*/
+
+# Claude Code local config (per-user permissions)
+.claude/settings.local.json
+.claude/worktrees/

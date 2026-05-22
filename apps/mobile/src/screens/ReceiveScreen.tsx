@@ -4,21 +4,29 @@ import type { ReturnTypeOfUseMobileBackend } from './types.js';
 
 export function ReceiveScreen({ backend }: { backend: ReturnTypeOfUseMobileBackend }) {
   return (
-    <View style={{ display: 'grid', gap: 14 }}>
+    <View style={{ gap: 14 }}>
       <ScreenCard
         eyebrow="Incoming"
         title="Approve desktop files"
         copy="The receive lane keeps the approval surface visible without needing a browser fallback."
       >
         <View style={styles.actionGrid}>
-          <Button onPress={() => backend.markHistory('Receipt scan.pdf', 780_000, 'desktop-to-phone', 'wifi')}>
-            Approve sample
-          </Button>
-          <Button onPress={() => backend.selectConnectionMode('hotspot')}>Use hotspot link</Button>
+          <View style={{ width: '48%' }}>
+            <Button onPress={() => backend.markHistory('Receipt scan.pdf', 780_000, 'desktop-to-phone', 'wifi')}>
+              Approve sample
+            </Button>
+          </View>
+          <View style={{ width: '48%' }}>
+            <Button onPress={() => backend.selectConnectionMode('hotspot')}>Use hotspot link</Button>
+          </View>
         </View>
       </ScreenCard>
 
-      <ScreenCard eyebrow="Pending" title="Waiting for approvals" copy="Incoming transfer cards will land here once the native transport module is connected.">
+      <ScreenCard
+        eyebrow="Pending"
+        title="Waiting for approvals"
+        copy="Incoming transfer cards will land here once the native transport module is connected."
+      >
         <View style={styles.jobList}>
           <View style={styles.jobCard}>
             <Text style={styles.jobName}>Shared design assets</Text>
@@ -38,33 +46,32 @@ export function ReceiveScreen({ backend }: { backend: ReturnTypeOfUseMobileBacke
 
 const styles = {
   actionGrid: {
-    display: 'grid',
+    flexDirection: 'row' as const,
+    flexWrap: 'wrap' as const,
     gap: 10,
-    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
   },
   jobList: {
-    display: 'grid',
     gap: 10,
   },
   jobCard: {
     backgroundColor: '#0c1625',
-    border: '1px solid #1e2f44',
+    borderColor: '#1e2f44',
     borderRadius: 18,
-    display: 'grid',
+    borderWidth: 1,
     gap: 6,
     padding: 12,
   },
   jobName: {
     color: '#eef6ff',
     fontSize: 15,
-    fontWeight: 700,
+    fontWeight: '700' as const,
   },
   jobMeta: {
     color: '#99b4c9',
-    lineHeight: 1.4,
+    lineHeight: 18,
   },
   copy: {
     color: '#a9bfd3',
-    lineHeight: 1.5,
+    lineHeight: 20,
   },
 };

@@ -4,7 +4,7 @@ import type { ReturnTypeOfUseMobileBackend } from './types.js';
 
 export function ScanScreen({ backend }: { backend: ReturnTypeOfUseMobileBackend }) {
   return (
-    <View style={{ display: 'grid', gap: 14 }}>
+    <View style={{ gap: 14 }}>
       <ScreenCard
         eyebrow="Discovery"
         title="Scan the desktop session QR"
@@ -17,12 +17,20 @@ export function ScanScreen({ backend }: { backend: ReturnTypeOfUseMobileBackend 
         </View>
 
         <View style={styles.actionGrid}>
-          <Button onPress={() => void backend.refresh()}>Refresh scan data</Button>
-          <Button onPress={() => backend.selectConnectionMode('lan')}>Switch to LAN</Button>
+          <View style={{ width: '48%' }}>
+            <Button onPress={() => void backend.refresh()}>Refresh scan data</Button>
+          </View>
+          <View style={{ width: '48%' }}>
+            <Button onPress={() => backend.selectConnectionMode('lan')}>Switch to LAN</Button>
+          </View>
         </View>
       </ScreenCard>
 
-      <ScreenCard eyebrow="Nearby desktops" title="Beacon list" copy="mDNS keeps nearby desktops visible without forcing a browser workflow.">
+      <ScreenCard
+        eyebrow="Nearby desktops"
+        title="Beacon list"
+        copy="mDNS keeps nearby desktops visible without forcing a browser workflow."
+      >
         <View style={styles.deviceList}>
           {backend.beacons.map((beacon) => (
             <View key={beacon.id} style={styles.deviceCard}>
@@ -42,55 +50,53 @@ export function ScanScreen({ backend }: { backend: ReturnTypeOfUseMobileBackend 
 const styles = {
   ticketBox: {
     backgroundColor: '#09111c',
-    border: '1px solid #1b2a3d',
+    borderColor: '#1b2a3d',
     borderRadius: 18,
-    display: 'grid',
+    borderWidth: 1,
     gap: 8,
     padding: 14,
   },
   ticketLabel: {
     color: '#89b7d1',
     fontSize: 11,
-    fontWeight: 800,
+    fontWeight: '800' as const,
     letterSpacing: 1.2,
     textTransform: 'uppercase' as const,
   },
   ticketValue: {
     color: '#f2f7ff',
     fontSize: 18,
-    fontWeight: 800,
+    fontWeight: '800' as const,
   },
   ticketBody: {
     color: '#a9bfd3',
     fontFamily: 'monospace',
     fontSize: 12,
-    lineHeight: 1.5,
-    overflowWrap: 'anywhere' as const,
+    lineHeight: 18,
   },
   actionGrid: {
-    display: 'grid',
+    flexDirection: 'row' as const,
+    flexWrap: 'wrap' as const,
     gap: 10,
-    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
   },
   deviceList: {
-    display: 'grid',
     gap: 10,
   },
   deviceCard: {
     backgroundColor: '#0c1625',
-    border: '1px solid #1e2f44',
+    borderColor: '#1e2f44',
     borderRadius: 18,
-    display: 'grid',
+    borderWidth: 1,
     gap: 6,
     padding: 12,
   },
   deviceName: {
     color: '#eef6ff',
     fontSize: 15,
-    fontWeight: 700,
+    fontWeight: '700' as const,
   },
   deviceMeta: {
     color: '#99b4c9',
-    lineHeight: 1.4,
+    lineHeight: 18,
   },
 };

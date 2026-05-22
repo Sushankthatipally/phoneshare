@@ -1,5 +1,5 @@
-import { MobileApp } from '../src/screens/MobileApp.js';
+import { HistoryScreen } from '../src/screens/HistoryScreen.js';
 
 export default function HistoryRoute() {
-  return <MobileApp initialScreen="history" />;
+  return <HistoryScreen />;
 }

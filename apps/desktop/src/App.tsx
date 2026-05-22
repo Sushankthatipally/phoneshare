@@ -1,365 +1,227 @@
-import { startTransition, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 
-import { Download, History as HistoryIcon, House, Laptop, RefreshCw, Settings as SettingsIcon, SendHorizontal, Smartphone, Zap } from 'lucide-react';
+import { Download, History as HistoryIcon, House, Link2, SendHorizontal, Settings as SettingsIcon, Zap } from 'lucide-react';
 
-import { Badge, Button, GlassPanel, QrCode, SectionHeading } from '@dropbeam/shared-ui';
-import { formatBytes } from '@dropbeam/protocol';
+import { Button } from '@dropbeam/shared-ui';
 
 import { useDesktopBackend } from './features/dashboard/useDesktopBackend.js';
+import { ConnectionPicker, type ConnectionChoice } from './components/ConnectionPicker.js';
+import { ConnectionScreen } from './components/ConnectionScreen.js';
+import { IncomingBanner } from './components/IncomingBanner.js';
+import { Onboarding } from './components/Onboarding.js';
 import { History } from './screens/History.js';
 import { Home } from './screens/Home.js';
 import { Receive } from './screens/Receive.js';
 import { Send } from './screens/Send.js';
 import { Settings } from './screens/Settings.js';
+import { Guest } from './screens/Guest.js';
 
-type DesktopScreen = 'home' | 'send' | 'receive' | 'history' | 'settings';
+type Screen = 'home' | 'send' | 'receive' | 'history' | 'guest' | 'settings';
 
-const screens: Array<{
-  id: DesktopScreen;
-  label: string;
-  note: string;
-  icon: typeof House;
-}> = [
-  { id: 'home', label: 'Home', note: 'overview', icon: House },
-  { id: 'send', label: 'Send', note: 'desktop to phone', icon: SendHorizontal },
-  { id: 'receive', label: 'Receive', note: 'phone to desktop', icon: Download },
-  { id: 'history', label: 'History', note: 'completed sessions', icon: HistoryIcon },
-  { id: 'settings', label: 'Settings', note: 'backend identity', icon: SettingsIcon },
+const NAV: Array<{ id: Screen; label: string; icon: typeof House }> = [
+  { id: 'home', label: 'Home', icon: House },
+  { id: 'send', label: 'Send', icon: SendHorizontal },
+  { id: 'receive', label: 'Receive', icon: Download },
+  { id: 'history', label: 'History', icon: HistoryIcon },
+  { id: 'guest', label: 'Guest', icon: Link2 },
+  { id: 'settings', label: 'Settings', icon: SettingsIcon },
 ];
 
+const TITLES: Record<Screen, string> = {
+  home: 'Home',
+  send: 'Send',
+  receive: 'Receive',
+  history: 'History',
+  guest: 'Guest share',
+  settings: 'Settings',
+};
+
 export default function App() {
-  const [screen, setScreen] = useState<DesktopScreen>('home');
-  const [pairView, setPairView] = useState<'qr' | 'devices'>('devices');
+  const [screen, setScreen] = useState<Screen>('home');
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [connection, setConnection] = useState<ConnectionChoice | null>(null);
+  const [pendingSendPaths, setPendingSendPaths] = useState<string[]>([]);
   const backend = useDesktopBackend();
-  const activeSession = backend.activeSession;
 
-  const description = useMemo(() => {
-    if (backend.loading) {
-      return 'Loading the local transfer service.';
+  // Pick up files passed in by the Windows "Send via DropBeam" context menu.
+  // The Rust main.rs parses --send <path> args and emits a `dropbeam:send` event.
+  useEffect(() => {
+    const win = window as Window & {
+      __TAURI_INTERNALS__?: {
+        invoke?: (cmd: string, args?: unknown) => Promise<unknown>;
+      };
+      __TAURI__?: {
+        event?: { listen: (name: string, handler: (event: { payload: { paths: string[] } }) => void) => Promise<() => void> };
+      };
+    };
+
+    // Active push path
+    let unlisten: (() => void) | undefined;
+    if (win.__TAURI__?.event?.listen) {
+      void win.__TAURI__.event
+        .listen('dropbeam:send', (event) => {
+          setPendingSendPaths((current) => [...current, ...(event.payload?.paths ?? [])]);
+          setScreen('send');
+        })
+        .then((dispose) => {
+          unlisten = dispose;
+        });
     }
 
-    if (backend.error) {
-      return backend.error;
+    // Pull path for cold launches
+    if (win.__TAURI_INTERNALS__?.invoke) {
+      void win.__TAURI_INTERNALS__.invoke('get_pending_send_paths').then((value) => {
+        const paths = Array.isArray(value) ? (value as string[]) : [];
+        if (paths.length) {
+          setPendingSendPaths((current) => [...current, ...paths]);
+          setScreen('send');
+        }
+      });
     }
 
-    if (!activeSession) {
-      return 'Create a session to publish a QR ticket and wait for a secure handshake.';
-    }
+    return () => {
+      unlisten?.();
+    };
+  }, []);
 
-    if (!activeSession.pairing.verifiedAt) {
-      return `Session ${activeSession.id.slice(0, 8)} is waiting for a device handshake.`;
-    }
+  const needsOnboarding = !backend.loading && backend.settings && !backend.settings.onboardingComplete;
 
-    return `Paired with ${activeSession.peerDevice?.name ?? 'a phone'} and ready for live transfers.`;
-  }, [activeSession, backend.error, backend.loading]);
+  const statusLabel = backend.loading
+    ? 'Booting'
+    : backend.error
+      ? 'Offline'
+      : backend.activeSession?.pairing.verifiedAt
+        ? 'Paired'
+        : backend.activeSession
+          ? backend.activeSession.state === 'awaiting-accept'
+            ? 'Accept?'
+            : 'Waiting'
+          : 'Idle';
 
   return (
-    <main className="desktop-app">
-      <aside className="desktop-sidebar">
-        <div className="desktop-brand">
-          <div className="desktop-brand__header">
-            <div className="desktop-brand__mark">
-              <Zap size={18} strokeWidth={2.3} />
-            </div>
-            <div>
-              <p className="desktop-eyebrow">DropBeam Desktop</p>
-              <h1>Transfer console</h1>
-              <p>{description}</p>
-            </div>
-          </div>
-
-          <div className="desktop-brand__metrics">
-            <div className="desktop-brand__metric">
-              <span>Sessions</span>
-              <strong>{backend.health?.sessions ?? 0}</strong>
-            </div>
-            <div className="desktop-brand__metric">
-              <span>Tracked bytes</span>
-              <strong>{formatBytes(backend.health?.totalBytes ?? 0)}</strong>
-            </div>
-          </div>
+    <div className="app">
+      <aside className="app__nav">
+        <div className="brand">
+          <span className="brand__mark">
+            <Zap size={16} strokeWidth={2.4} />
+          </span>
+          <span className="brand__name">
+            <strong>DropBeam</strong>
+            <small>Desktop</small>
+          </span>
         </div>
 
-        <nav className="desktop-nav">
-          {screens.map((item) => {
+        <nav className="nav">
+          {NAV.map((item) => {
             const Icon = item.icon;
-
+            const active = screen === item.id;
             return (
               <button
-                className={`desktop-nav__button${screen === item.id ? ' desktop-nav__button--active' : ''}`}
+                className={`nav__item${active ? ' nav__item--active' : ''}`}
                 key={item.id}
-                onClick={() => {
-                  startTransition(() => {
-                    setScreen(item.id);
-                  });
-                }}
+                onClick={() => setScreen(item.id)}
                 type="button"
               >
-                <span className="desktop-nav__icon">
-                  <Icon size={18} strokeWidth={2.1} />
-                </span>
-                <span>
-                  <span>{item.label}</span>
-                  <small>{item.note}</small>
-                </span>
+                <Icon size={16} strokeWidth={2} />
+                {item.label}
               </button>
             );
           })}
         </nav>
 
-        <GlassPanel className="desktop-sidebar__panel">
-          <Badge tone={backend.error ? 'amber' : 'green'}>
-            {backend.error ? 'backend issue' : 'backend online'}
-          </Badge>
-          <p>
-            {backend.error
-              ? 'The local service reported an error.'
-              : 'The desktop shell is backed by the live Node transfer service.'}
-          </p>
-          <div className="desktop-sidebar__stats">
-            <div className="desktop-sidebar__stat">
-              <span>Paired sessions</span>
-              <strong>{backend.health?.pairedSessions ?? 0}</strong>
-            </div>
-            <div className="desktop-sidebar__stat">
-              <span>Files tracked</span>
-              <strong>{backend.health?.fileCount ?? 0}</strong>
-            </div>
-          </div>
-        </GlassPanel>
+        <div className="nav__status">
+          <span>Backend</span>
+          <strong>{statusLabel}</strong>
+        </div>
       </aside>
 
-      <section className="desktop-workspace">
-        <header className="desktop-topbar">
-          <div className="desktop-topbar__copy">
-            <SectionHeading
-              eyebrow="Session"
-              title={activeSession ? activeSession.localDevice.name : 'No active session'}
-              description={description}
-            />
-          </div>
-          <div className="desktop-chip-row">
-            <Badge tone={backend.loading ? 'amber' : 'green'}>
-              {backend.loading ? 'loading' : 'live'}
-            </Badge>
-            <Badge tone="blue">{activeSession?.state ?? 'idle'}</Badge>
-            <Badge>{activeSession?.peerDevice?.name ?? 'waiting for phone'}</Badge>
+      <main className="workspace">
+        <div className="topbar">
+          <h1>{TITLES[screen]}</h1>
+          <div className="topbar__actions">
+            {backend.activeSession ? (
+              <Button
+                disabled={backend.busy === 'close-session'}
+                onClick={() => void backend.closeSession()}
+                variant="ghost"
+              >
+                Close session
+              </Button>
+            ) : null}
             <Button
               disabled={backend.busy === 'create-session'}
-              onClick={() => void backend.createSession()}
+              onClick={() => setPickerOpen(true)}
               variant="primary"
             >
-              {backend.busy === 'create-session' ? 'Creating' : 'Create session'}
-            </Button>
-            <Button
-              disabled={!activeSession || backend.busy === 'close-session'}
-              onClick={() => void backend.closeSession()}
-              variant="ghost"
-            >
-              Close
+              New session
             </Button>
           </div>
-        </header>
-
-        <div className="desktop-layout">
-          <div className="desktop-main">{renderScreen(screen, backend)}</div>
-
-          <aside className="desktop-rail">
-            <GlassPanel className="desktop-rail__panel">
-              <SectionHeading
-                eyebrow="Pair"
-                title={activeSession ? 'Current pairing lane' : 'Create a session first'}
-                description={
-                  activeSession
-                    ? 'Scan the QR or pick a discovered device to establish the secure lane.'
-                    : 'No session is currently selected.'
-                }
-              />
-
-              <div className="desktop-device-toggle">
-                <button
-                  className={`desktop-device-toggle__button${
-                    pairView === 'qr' ? ' desktop-device-toggle__button--active' : ''
-                  }`}
-                  onClick={() => setPairView('qr')}
-                  type="button"
-                >
-                  QR Code
-                </button>
-                <button
-                  className={`desktop-device-toggle__button${
-                    pairView === 'devices' ? ' desktop-device-toggle__button--active' : ''
-                  }`}
-                  onClick={() => setPairView('devices')}
-                  type="button"
-                >
-                  mDNS Devices
-                </button>
-              </div>
-
-              {pairView === 'devices' ? (
-                <>
-                  <div className="desktop-device-discovery">
-                    <p>Discovery only works on the same local network.</p>
-                    <button className="desktop-refresh-button" onClick={() => void backend.refresh()} type="button">
-                      <RefreshCw size={16} strokeWidth={2} />
-                      Refresh
-                    </button>
-                  </div>
-
-                  <div className="desktop-device-list">
-                    {backend.devices.length ? (
-                      backend.devices.map((device) => {
-                        const DeviceIcon = iconForDevice(device.icon);
-                        const bars = signalBars(device.transport);
-                        const active = device.local ? backend.selectedSessionId === activeSession?.id : false;
-
-                        return (
-                          <button
-                            className={`desktop-device-card${active ? ' desktop-device-card--active' : ''}`}
-                            key={device.id}
-                            onClick={() => {
-                              if (device.local && activeSession) {
-                                backend.setSelectedSessionId(activeSession.id);
-                              }
-                            }}
-                            type="button"
-                          >
-                            <div className="desktop-device-card__icon">
-                              <DeviceIcon size={28} strokeWidth={1.9} />
-                            </div>
-
-                            <div className="desktop-device-card__copy">
-                              <strong>{device.name}</strong>
-                              <div className="desktop-device-card__meta">
-                                <span>{modeLabel(device.transport)}</span>
-                                {device.local ? (
-                                  activeSession?.pairing.verifiedAt ? (
-                                    <small>Secure lane ready</small>
-                                  ) : activeSession ? (
-                                    <small>Waiting for handshake</small>
-                                  ) : (
-                                    <small>Open a session to pair</small>
-                                  )
-                                ) : (
-                                  <small>LAN discovery</small>
-                                )}
-                              </div>
-                            </div>
-
-                            <div aria-hidden="true" className="desktop-device-bars">
-                              {Array.from({ length: 4 }).map((_, index) => (
-                                <span
-                                  className={
-                                    index < bars
-                                      ? 'desktop-device-bars__bar desktop-device-bars__bar--active'
-                                      : 'desktop-device-bars__bar'
-                                  }
-                                  key={index}
-                                />
-                              ))}
-                            </div>
-                          </button>
-                        );
-                      })
-                    ) : (
-                      <div className="desktop-empty-state">
-                        <p>No LAN devices are visible yet. Keep the backend open on the same network and refresh.</p>
-                      </div>
-                    )}
-                  </div>
-                </>
-              ) : (
-                <div className="desktop-qr-placeholder">
-                  <QrCode size={216} value={activeSession?.pairing.ticket.qrValue} />
-                  <div className="desktop-qr-placeholder__copy">
-                    <strong>
-                      {activeSession ? 'Secure ticket ready' : 'No QR session yet'}
-                    </strong>
-                    <p>Scan the live pairing QR on the other device, or switch to the devices tab and choose a discovered peer.</p>
-                  </div>
-                  <Button
-                    disabled={!activeSession?.pairing.ticket.qrValue}
-                    onClick={() => {
-                      void navigator.clipboard?.writeText?.(activeSession?.pairing.ticket.qrValue ?? '');
-                    }}
-                    variant="secondary"
-                  >
-                    Copy pairing ticket
-                  </Button>
-                </div>
-              )}
-            </GlassPanel>
-
-            <GlassPanel className="desktop-rail__panel">
-              <SectionHeading
-                eyebrow="Health"
-                title="Live backend counters"
-                description="These values come from the current backend snapshot."
-              />
-              <ul className="desktop-rail__list">
-                <li>Active sessions: {backend.health?.activeSessions ?? 0}</li>
-                <li>Transferring sessions: {backend.health?.transferringSessions ?? 0}</li>
-                <li>Completed sessions: {backend.dashboard?.totals.completed ?? 0}</li>
-                <li>Clipboard source: {backend.clipboard?.sourceDeviceName ?? 'none'}</li>
-                <li>Handshake flow: QR + local discovery</li>
-              </ul>
-              <Badge tone="blue">Local backend only</Badge>
-            </GlassPanel>
-          </aside>
         </div>
-      </section>
-    </main>
+
+        {backend.error ? (
+          <section className="card" style={{ borderColor: 'var(--db-amber)' }}>
+            <p className="card__eyebrow">Backend unreachable</p>
+            <h2 className="card__title">Can't reach the local service</h2>
+            <p className="card__copy">{backend.error}</p>
+            <p className="card__copy">
+              The bundled backend should auto-start on port 17619. If you see this message:
+              <br />· Make sure no other DropBeam (or dev <code>node</code>) instance is holding the port.
+              <br />· Run <code>scripts\diagnose-windows.ps1</code> from PowerShell for details.
+            </p>
+            <div className="topbar__actions">
+              <Button onClick={() => void backend.refresh()} variant="primary">
+                Retry
+              </Button>
+            </div>
+          </section>
+        ) : null}
+
+        <IncomingBanner backend={backend} />
+
+        {renderScreen(screen, backend, () => setPickerOpen(true), pendingSendPaths, () => setPendingSendPaths([]))}
+      </main>
+
+      {needsOnboarding ? <Onboarding backend={backend} /> : null}
+
+      {pickerOpen ? (
+        <ConnectionPicker
+          backend={backend}
+          onClose={() => setPickerOpen(false)}
+          onChoose={(choice) => {
+            setPickerOpen(false);
+            setConnection(choice);
+          }}
+        />
+      ) : null}
+
+      {connection ? (
+        <ConnectionScreen backend={backend} choice={connection} onClose={() => setConnection(null)} />
+      ) : null}
+    </div>
   );
 }
 
-function renderScreen(screen: DesktopScreen, backend: ReturnType<typeof useDesktopBackend>) {
+function renderScreen(
+  screen: Screen,
+  backend: ReturnType<typeof useDesktopBackend>,
+  openPicker: () => void,
+  pendingSendPaths: string[],
+  clearPendingSendPaths: () => void,
+) {
   switch (screen) {
     case 'home':
-      return <Home backend={backend} />;
+      return <Home backend={backend} openPicker={openPicker} />;
     case 'send':
-      return <Send backend={backend} />;
+      return <Send backend={backend} pendingSendPaths={pendingSendPaths} onClearPending={clearPendingSendPaths} />;
     case 'receive':
       return <Receive backend={backend} />;
     case 'history':
       return <History backend={backend} />;
+    case 'guest':
+      return <Guest backend={backend} />;
     case 'settings':
       return <Settings backend={backend} />;
     default:
       return null;
-  }
-}
-
-function iconForDevice(icon?: string | null) {
-  switch (icon) {
-    case 'phone':
-    case 'tablet':
-      return Smartphone;
-    case 'laptop':
-      return Laptop;
-    default:
-      return Laptop;
-  }
-}
-
-function modeLabel(mode?: string | null) {
-  switch (mode) {
-    case 'usb':
-      return 'USB';
-    case 'hotspot':
-      return 'HOTSPOT';
-    default:
-      return 'WIFI';
-  }
-}
-
-function signalBars(mode?: string | null) {
-  switch (mode) {
-    case 'usb':
-      return 4;
-    case 'hotspot':
-      return 2;
-    default:
-      return 3;
   }
 }

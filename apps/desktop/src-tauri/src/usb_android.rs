@@ -2,6 +2,19 @@ use anyhow::{bail, Context, Result};
 use serde::Serialize;
 use tokio::process::Command;
 
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+#[cfg(windows)]
+fn hide_console(cmd: &mut Command) -> &mut Command {
+    cmd.creation_flags(CREATE_NO_WINDOW)
+}
+
+#[cfg(not(windows))]
+fn hide_console(cmd: &mut Command) -> &mut Command {
+    cmd
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsbAndroidStatus {
@@ -115,8 +128,10 @@ impl UsbAndroidBridge {
             .into_iter()
             .map(|value| value.as_ref().to_string())
             .collect::<Vec<_>>();
-        let output = Command::new(&self.adb_binary)
-            .args(&arguments)
+        let mut command = Command::new(&self.adb_binary);
+        command.args(&arguments);
+        hide_console(&mut command);
+        let output = command
             .output()
             .await
             .with_context(|| format!("failed to execute {}", self.adb_binary))?;

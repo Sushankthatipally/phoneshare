@@ -1,5 +1,5 @@
-import { MobileApp } from '../src/screens/MobileApp.js';
+import { Redirect } from 'expo-router';
 
 export default function ReceiveRoute() {
-  return <MobileApp initialScreen="receive" />;
+  return <Redirect href="/history" />;
 }

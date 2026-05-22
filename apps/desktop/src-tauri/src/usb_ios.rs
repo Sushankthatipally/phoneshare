@@ -7,6 +7,19 @@ use tokio::{
     sync::Mutex,
 };
 
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+#[cfg(windows)]
+fn hide_console(cmd: &mut Command) -> &mut Command {
+    cmd.creation_flags(CREATE_NO_WINDOW)
+}
+
+#[cfg(not(windows))]
+fn hide_console(cmd: &mut Command) -> &mut Command {
+    cmd
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsbIosStatus {
@@ -61,11 +74,14 @@ impl UsbIosBridge {
 
         let mut guard = self.tunnel_process.lock().await;
         if guard.is_none() {
-            let child = Command::new(&self.iproxy_binary)
+            let mut command = Command::new(&self.iproxy_binary);
+            command
                 .arg(self.host_port.to_string())
                 .arg(self.device_port.to_string())
                 .stdout(Stdio::null())
-                .stderr(Stdio::null())
+                .stderr(Stdio::null());
+            hide_console(&mut command);
+            let child = command
                 .spawn()
                 .with_context(|| format!("failed to launch {}", self.iproxy_binary))?;
             *guard = Some(child);
@@ -96,10 +112,13 @@ impl UsbIosBridge {
     }
 
     async fn detect_iproxy(&self) -> Result<()> {
-        let output = Command::new(&self.iproxy_binary)
+        let mut command = Command::new(&self.iproxy_binary);
+        command
             .arg("--version")
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::null());
+        hide_console(&mut command);
+        let output = command
             .output()
             .await
             .with_context(|| format!("failed to execute {}", self.iproxy_binary))?;

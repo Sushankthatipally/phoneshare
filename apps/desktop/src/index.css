@@ -4,7 +4,8 @@
 
 :root {
   color-scheme: dark;
-  font-family: "IBM Plex Mono", "Cascadia Mono", "JetBrains Mono", "Consolas", monospace;
+  font-family: "Inter", "Segoe UI", "Helvetica Neue", system-ui, -apple-system, sans-serif;
+  font-size: 14px;
   background: #000000;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;

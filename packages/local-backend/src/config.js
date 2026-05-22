@@ -1,9 +1,15 @@
-import { fileURLToPath } from 'node:url';
-import { dirname, join, resolve } from 'node:path';
+import { join } from 'node:path';
 
-const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+// When running via `node src/index.js` or `pnpm --filter @dropbeam/local-backend run dev`,
+// cwd is the package root so process.cwd() resolves correctly.
+// When running as a pkg-bundled sidecar, DROPBEAM_DATA_DIR is set by the Tauri host
+// so this fallback is never used.
+function resolvePackageRoot() {
+  return process.env.DROPBEAM_PACKAGE_ROOT ?? process.cwd();
+}
 
 export function resolveBackendConfig() {
+  const packageRoot = resolvePackageRoot();
   return {
     packageRoot,
     dataDir: process.env.DROPBEAM_DATA_DIR ?? join(packageRoot, 'data'),

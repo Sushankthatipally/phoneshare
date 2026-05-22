@@ -1,5 +1,5 @@
-import { MobileApp } from '../src/screens/MobileApp.js';
+import { Redirect } from 'expo-router';
 
 export default function ConnectRoute() {
-  return <MobileApp initialScreen="scan" />;
+  return <Redirect href="/" />;
 }

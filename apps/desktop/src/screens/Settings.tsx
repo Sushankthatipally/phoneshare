@@ -1,166 +1,344 @@
 import { useEffect, useState } from 'react';
 
-import { MonitorCog } from 'lucide-react';
-
-import { Badge, Button, GlassPanel } from '@dropbeam/shared-ui';
+import { Badge, Button } from '@dropbeam/shared-ui';
+import { formatBytes } from '@dropbeam/protocol';
 
 import type { DesktopBackendState } from '../features/dashboard/useDesktopBackend.js';
 
+type DeviceIcon = 'desktop' | 'laptop' | 'phone' | 'tablet';
+type Tab = 'identity' | 'trusted' | 'watch' | 'benchmark';
+
 export function Settings({ backend }: { backend: DesktopBackendState }) {
+  const [tab, setTab] = useState<Tab>('identity');
   const [deviceName, setDeviceName] = useState(backend.settings?.deviceName ?? 'DropBeam Desktop');
-  const [deviceIcon, setDeviceIcon] = useState(backend.settings?.deviceIcon ?? 'desktop');
-  const [autoCloseAfterDownload, setAutoCloseAfterDownload] = useState(
-    backend.settings?.autoCloseAfterDownload ?? false,
-  );
+  const [deviceIcon, setDeviceIcon] = useState<DeviceIcon>(backend.settings?.deviceIcon ?? 'desktop');
+  const [downloadFolder, setDownloadFolder] = useState(backend.settings?.downloadFolder ?? '~/Downloads/DropBeam/');
+  const [connectionMode, setConnectionMode] = useState<'auto' | 'wifi' | 'usb'>(backend.settings?.connectionMode ?? 'auto');
+  const [autoClose, setAutoClose] = useState(backend.settings?.autoCloseAfterDownload ?? false);
+  const [autoAcceptTrusted, setAutoAcceptTrusted] = useState(backend.settings?.autoAcceptTrusted ?? false);
 
   useEffect(() => {
-    if (backend.settings) {
-      setDeviceName(backend.settings.deviceName);
-      setDeviceIcon(backend.settings.deviceIcon);
-      setAutoCloseAfterDownload(backend.settings.autoCloseAfterDownload);
-    }
+    if (!backend.settings) return;
+    setDeviceName(backend.settings.deviceName);
+    setDeviceIcon(backend.settings.deviceIcon);
+    setDownloadFolder(backend.settings.downloadFolder);
+    setConnectionMode(backend.settings.connectionMode);
+    setAutoClose(backend.settings.autoCloseAfterDownload);
+    setAutoAcceptTrusted(backend.settings.autoAcceptTrusted);
   }, [backend.settings]);
 
   return (
-    <section className="desktop-page">
-      <div className="desktop-grid desktop-grid--hero">
-        <GlassPanel className="desktop-card">
-          <div className="desktop-card__header">
-            <div>
-              <p className="desktop-card__eyebrow">Identity</p>
-              <h3>Desktop profile settings</h3>
-              <p>Keep the reference shell’s compact settings layout while editing live backend preferences.</p>
-            </div>
-            <MonitorCog size={18} strokeWidth={1.8} />
-          </div>
-
-          <div className="desktop-stat-grid">
-            <article className="desktop-stat-card">
-              <span>Device name</span>
-              <strong>{backend.settings?.deviceName ?? 'Loading'}</strong>
-            </article>
-            <article className="desktop-stat-card">
-              <span>Preferred mode</span>
-              <strong>{backend.settings?.preferredMode ?? 'wifi'}</strong>
-            </article>
-            <article className="desktop-stat-card">
-              <span>Device icon</span>
-              <strong>{iconLabel(deviceIcon)}</strong>
-            </article>
-            <article className="desktop-stat-card">
-              <span>Handshake</span>
-              <strong>Automatic</strong>
-            </article>
-            <article className="desktop-stat-card">
-              <span>Auto-close</span>
-              <strong>{autoCloseAfterDownload ? 'Enabled' : 'Disabled'}</strong>
-            </article>
-          </div>
-        </GlassPanel>
-
-        <GlassPanel className="desktop-card">
-          <div className="desktop-card__header">
-            <div>
-              <p className="desktop-card__eyebrow">Live state</p>
-              <h3>Current backend configuration</h3>
-              <p>These values come from the backend dashboard and update after you save the form.</p>
-            </div>
-            <Badge tone="blue">{backend.settings?.updatedAt ?? 'No save yet'}</Badge>
-          </div>
-
-          <div className="desktop-spec-grid">
-            <article>
-              <span>Sessions</span>
-              <strong>{backend.health?.sessions ?? 0}</strong>
-            </article>
-            <article>
-              <span>Paired</span>
-              <strong>{backend.health?.pairedSessions ?? 0}</strong>
-            </article>
-            <article>
-              <span>Transferring</span>
-              <strong>{backend.health?.transferringSessions ?? 0}</strong>
-            </article>
-          </div>
-        </GlassPanel>
+    <>
+      <div className="tabs">
+        {(['identity', 'trusted', 'watch', 'benchmark'] as Tab[]).map((t) => (
+          <button key={t} className={`tab${tab === t ? ' tab--active' : ''}`} onClick={() => setTab(t)} type="button">
+            {t === 'identity' ? 'Identity' : t === 'trusted' ? 'Trusted devices' : t === 'watch' ? 'Watch folders' : 'Benchmark'}
+          </button>
+        ))}
       </div>
 
-      <GlassPanel className="desktop-card">
-        <div className="desktop-card__header">
-          <div>
-            <p className="desktop-card__eyebrow">Edit preferences</p>
-            <h3>Update new-session defaults</h3>
-            <p>These values are applied the next time the desktop creates a live session.</p>
-          </div>
-        </div>
+      {tab === 'identity' ? (
+        <section className="card">
+          <p className="card__eyebrow">Identity</p>
+          <h2 className="card__title">Device defaults</h2>
+          <form
+            className="form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void backend.updateSettings({
+                deviceName,
+                deviceIcon,
+                downloadFolder,
+                connectionMode,
+                preferredMode: connectionMode === 'usb' ? 'usb' : 'wifi',
+                autoCloseAfterDownload: autoClose,
+                autoAcceptTrusted,
+              });
+            }}
+          >
+            <div className="field">
+              <span className="field__label">Device name</span>
+              <input className="input" onChange={(e) => setDeviceName(e.target.value)} value={deviceName} />
+            </div>
 
-        <form
-          className="desktop-form"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void backend.updateSettings({
-              deviceName,
-              deviceIcon,
-              preferredMode: backend.settings?.preferredMode ?? 'wifi',
-              autoCloseAfterDownload,
-            });
+            <div className="field">
+              <span className="field__label">Device icon</span>
+              <select className="select" onChange={(e) => setDeviceIcon(e.target.value as DeviceIcon)} value={deviceIcon}>
+                <option value="desktop">Desktop</option>
+                <option value="laptop">Laptop</option>
+                <option value="phone">Phone</option>
+                <option value="tablet">Tablet</option>
+              </select>
+            </div>
+
+            <div className="field">
+              <span className="field__label">Download folder (preference)</span>
+              <input className="input" onChange={(e) => setDownloadFolder(e.target.value)} value={downloadFolder} />
+            </div>
+
+            <div className="field">
+              <span className="field__label">Preferred connection mode</span>
+              <select
+                className="select"
+                onChange={(e) => setConnectionMode(e.target.value as 'auto' | 'wifi' | 'usb')}
+                value={connectionMode}
+              >
+                <option value="auto">Auto · USB if plugged, WiFi otherwise</option>
+                <option value="wifi">Always WiFi</option>
+                <option value="usb">Always USB</option>
+              </select>
+            </div>
+
+            <label className="checkbox">
+              <input checked={autoClose} onChange={(e) => setAutoClose(e.target.checked)} type="checkbox" />
+              Close sessions automatically after the last file downloads
+            </label>
+
+            <label className="checkbox">
+              <input
+                checked={autoAcceptTrusted}
+                onChange={(e) => setAutoAcceptTrusted(e.target.checked)}
+                type="checkbox"
+              />
+              Auto-accept incoming connections from trusted devices
+            </label>
+
+            <div className="topbar__actions">
+              <Button disabled={backend.busy === 'update-settings'} type="submit" variant="primary">
+                {backend.busy === 'update-settings' ? 'Saving' : 'Save'}
+              </Button>
+            </div>
+          </form>
+        </section>
+      ) : null}
+
+      {tab === 'trusted' ? (
+        <section className="card">
+          <p className="card__eyebrow">Trusted devices</p>
+          <h2 className="card__title">Phones that auto-accept</h2>
+          <p className="card__copy">
+            Trusted devices skip the Accept prompt when they reconnect. Toggle the master switch on the Identity tab.
+          </p>
+          {backend.trustedDevices.length ? (
+            <div className="list">
+              {backend.trustedDevices.map((device) => (
+                <div className="row" key={device.fingerprint}>
+                  <div className="row__copy">
+                    <strong>{device.name}</strong>
+                    <span>
+                      {device.platform} · trusted {new Date(device.trustedAt).toLocaleString()}
+                    </span>
+                  </div>
+                  <div className="topbar__actions">
+                    <Badge tone={device.autoAccept ? 'green' : 'neutral'}>
+                      {device.autoAccept ? 'auto' : 'manual'}
+                    </Badge>
+                    <Button onClick={() => void backend.removeTrusted(device.fingerprint)} variant="ghost">
+                      Remove
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="empty">No trusted devices yet. Pair a phone and tap "Trust this device" on the Accept prompt.</div>
+          )}
+
+          {backend.knownDevices.length ? (
+            <>
+              <p className="card__eyebrow" style={{ marginTop: 12 }}>Known but not trusted</p>
+              <div className="list">
+                {backend.knownDevices
+                  .filter((d) => !backend.trustedDevices.some((t) => t.fingerprint === d.fingerprint))
+                  .map((device) => (
+                    <div className="row" key={device.fingerprint}>
+                      <div className="row__copy">
+                        <strong>{device.name}</strong>
+                        <span>
+                          {device.platform} · last seen {new Date(device.lastSeenAt).toLocaleString()}
+                        </span>
+                      </div>
+                      <Button onClick={() => void backend.setTrusted(device.fingerprint, true)} variant="secondary">
+                        Trust
+                      </Button>
+                    </div>
+                  ))}
+              </div>
+            </>
+          ) : null}
+        </section>
+      ) : null}
+
+      {tab === 'watch' ? <WatchFoldersSection backend={backend} /> : null}
+
+      {tab === 'benchmark' ? <BenchmarkSection backend={backend} /> : null}
+    </>
+  );
+}
+
+function WatchFoldersSection({ backend }: { backend: DesktopBackendState }) {
+  const [folderPath, setFolderPath] = useState('');
+  const [destination, setDestination] = useState(backend.knownDevices[0]?.fingerprint ?? '');
+  const folders = backend.settings?.watchFolders ?? [];
+
+  return (
+    <section className="card">
+      <p className="card__eyebrow">Watch folders</p>
+      <h2 className="card__title">Auto-send when a phone connects</h2>
+      <p className="card__copy">
+        Add a folder and a destination device. When the device reconnects, anything new in the folder is sent automatically.
+        <br />
+        Actual filesystem watching needs a Tauri sidecar — UI is wired now so the configuration persists when that lands.
+      </p>
+
+      <div className="field">
+        <span className="field__label">Source folder path</span>
+        <input
+          className="input"
+          onChange={(e) => setFolderPath(e.target.value)}
+          placeholder="~/Desktop/ToPhone"
+          value={folderPath}
+        />
+      </div>
+
+      <div className="field">
+        <span className="field__label">Destination device</span>
+        <select className="select" onChange={(e) => setDestination(e.target.value)} value={destination}>
+          <option value="">— pick a known device —</option>
+          {backend.knownDevices.map((d) => (
+            <option key={d.fingerprint} value={d.fingerprint}>
+              {d.name}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      <div className="topbar__actions">
+        <Button
+          disabled={!folderPath || !destination}
+          onClick={() => {
+            const target = backend.knownDevices.find((d) => d.fingerprint === destination);
+            if (!target) return;
+            const nextFolders = [
+              ...folders,
+              {
+                id: crypto.randomUUID(),
+                path: folderPath,
+                destinationFingerprint: destination,
+                destinationLabel: target.name,
+                fileTypes: 'all' as const,
+                trigger: 'on-connect' as const,
+              },
+            ];
+            void backend.updateSettings({ watchFolders: nextFolders });
+            setFolderPath('');
           }}
+          variant="primary"
         >
-          <label className="desktop-form-field">
-            <span>Desktop name</span>
-            <input
-              className="desktop-input"
-              onChange={(event) => setDeviceName(event.target.value)}
-              value={deviceName}
-            />
-          </label>
+          Add watch folder
+        </Button>
+      </div>
 
-          <label className="desktop-form-field">
-            <span>Device icon</span>
-            <select
-              className="desktop-input"
-              onChange={(event) =>
-                setDeviceIcon(event.target.value as 'desktop' | 'laptop' | 'phone' | 'tablet')
-              }
-              value={deviceIcon}
-            >
-              <option value="desktop">Desktop tower</option>
-              <option value="laptop">Laptop</option>
-              <option value="phone">Phone</option>
-              <option value="tablet">Tablet</option>
-            </select>
-          </label>
-
-          <label className="desktop-checkbox">
-            <input
-              checked={autoCloseAfterDownload}
-              onChange={(event) => setAutoCloseAfterDownload(event.target.checked)}
-              type="checkbox"
-            />
-            <span>Close sessions automatically after the final download</span>
-          </label>
-
-          <div className="desktop-inline-actions">
-            <Badge tone="blue">{backend.settings?.updatedAt ?? 'No settings saved yet'}</Badge>
-            <Button disabled={backend.busy === 'update-settings'} type="submit">
-              {backend.busy === 'update-settings' ? 'Saving' : 'Save settings'}
-            </Button>
-          </div>
-        </form>
-      </GlassPanel>
+      {folders.length ? (
+        <div className="list">
+          {folders.map((folder) => (
+            <div className="row" key={folder.id}>
+              <div className="row__copy">
+                <strong>{folder.path}</strong>
+                <span>
+                  → {folder.destinationLabel} · {folder.trigger.replace('-', ' ')}
+                </span>
+              </div>
+              <Button
+                onClick={() =>
+                  void backend.updateSettings({ watchFolders: folders.filter((f) => f.id !== folder.id) })
+                }
+                variant="ghost"
+              >
+                Remove
+              </Button>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="empty">No watch folders configured.</div>
+      )}
     </section>
   );
 }
 
-function iconLabel(value: string) {
-  switch (value) {
-    case 'laptop':
-      return 'Laptop';
-    case 'phone':
-      return 'Phone';
-    case 'tablet':
-      return 'Tablet';
+function BenchmarkSection({ backend }: { backend: DesktopBackendState }) {
+  const [running, setRunning] = useState(false);
+  const [send, setSend] = useState<{ bytesPerSecond: number } | null>(null);
+  const [receive, setReceive] = useState<{ bytesPerSecond: number } | null>(null);
+
+  const ceiling = ceilingFor(backend.activeSession?.mode ?? backend.settings?.preferredMode ?? 'wifi');
+
+  return (
+    <section className="card">
+      <p className="card__eyebrow">Speed benchmark</p>
+      <h2 className="card__title">How fast is the active lane?</h2>
+      <p className="card__copy">
+        Sends and receives a 4 MB blob to the local backend. Real device-to-device throughput will be measured once the
+        mobile transport lands; for now this confirms the desktop ↔ backend lane.
+      </p>
+
+      <div className="topbar__actions">
+        <Button
+          disabled={running}
+          onClick={async () => {
+            setRunning(true);
+            setSend(null);
+            setReceive(null);
+            try {
+              const s = await backend.benchmarkSend();
+              setSend(s);
+              const r = await backend.benchmarkReceive();
+              setReceive(r);
+            } finally {
+              setRunning(false);
+            }
+          }}
+          variant="primary"
+        >
+          {running ? 'Running…' : 'Run speed test'}
+        </Button>
+      </div>
+
+      <div className="stats">
+        <div className="stat">
+          <span className="stat__label">Send</span>
+          <strong className="stat__value">{send ? `${formatBytes(send.bytesPerSecond)}/s` : '—'}</strong>
+        </div>
+        <div className="stat">
+          <span className="stat__label">Receive</span>
+          <strong className="stat__value">{receive ? `${formatBytes(receive.bytesPerSecond)}/s` : '—'}</strong>
+        </div>
+        <div className="stat">
+          <span className="stat__label">Ceiling</span>
+          <strong className="stat__value">{formatBytes(ceiling)}/s</strong>
+        </div>
+      </div>
+
+      {send ? (
+        <div className="bar">
+          <div
+            className="bar__fill"
+            style={{ width: `${Math.min(100, Math.round((send.bytesPerSecond / ceiling) * 100))}%` }}
+          />
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function ceilingFor(mode: string) {
+  switch (mode) {
+    case 'usb':
+      return 180 * 1024 * 1024;
+    case 'hotspot':
+      return 28 * 1024 * 1024;
     default:
-      return 'Desktop tower';
+      return 96 * 1024 * 1024;
   }
 }

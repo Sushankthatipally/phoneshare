@@ -10,6 +10,11 @@
     "dev:mobile": "pnpm --filter @dropbeam/mobile dev",
     "typecheck": "turbo run typecheck"
   },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  },
   "devDependencies": {
     "turbo": "latest",
     "typescript": "latest"

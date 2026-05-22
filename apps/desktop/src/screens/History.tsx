@@ -1,203 +1,127 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 
-import { Badge, GlassPanel, SectionHeading } from '@dropbeam/shared-ui';
+import { Badge, Button } from '@dropbeam/shared-ui';
 import { formatBytes } from '@dropbeam/protocol';
 
 import type { DesktopBackendState } from '../features/dashboard/useDesktopBackend.js';
 
 export function History({ backend }: { backend: DesktopBackendState }) {
   const [query, setQuery] = useState('');
-  const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
 
-  const filteredHistory = useMemo(() => {
-    const normalizedQuery = query.trim().toLowerCase();
-    if (!normalizedQuery) {
-      return backend.history;
-    }
-
+  const filtered = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    if (!normalized) return backend.history;
     return backend.history.filter((entry) =>
-      [
-        entry.id,
-        entry.peerDevice?.name,
-        entry.peerDevice?.platform,
-        entry.localDevice.name,
-        entry.mode,
-        entry.state,
-        ...entry.files.flatMap((file) => [file.name, file.relativePath, file.sourceDeviceName]),
-      ]
+      [entry.id, entry.peerDevice?.name, entry.mode, entry.state, ...entry.files.map((f) => f.name)]
         .filter(Boolean)
         .join(' ')
         .toLowerCase()
-        .includes(normalizedQuery),
+        .includes(normalized),
     );
   }, [backend.history, query]);
 
-  useEffect(() => {
-    setSelectedHistoryId((current) => {
-      if (current && filteredHistory.some((entry) => entry.id === current)) {
-        return current;
-      }
-
-      return filteredHistory[0]?.id ?? null;
-    });
-  }, [filteredHistory]);
-
-  const selectedEntry = filteredHistory.find((entry) => entry.id === selectedHistoryId) ?? filteredHistory[0] ?? null;
+  const selectedEntry = filtered.find((entry) => entry.id === selectedId) ?? null;
 
   return (
-    <div className="desktop-screen">
-      <GlassPanel className="desktop-panel-stack">
-        <SectionHeading
-          eyebrow="History"
-          title="Completed and closed sessions"
-          description="This table is fed by the persisted backend history. There is no mock transfer data in this view."
-        />
+    <>
+      <section className="card">
+        <p className="card__eyebrow">History</p>
+        <h2 className="card__title">Past sessions</h2>
 
-        <div className="desktop-summary-strip">
-          <article className="desktop-summary-card">
-            <span>Sessions</span>
-            <strong>{backend.history.length}</strong>
-            <p>Every closed or completed session remains searchable.</p>
-          </article>
-          <article className="desktop-summary-card">
-            <span>Last session</span>
-            <strong>{backend.history[0]?.id.slice(0, 8) ?? 'None'}</strong>
-            <p>The most recent history item is shown first.</p>
-          </article>
-          <article className="desktop-summary-card">
-            <span>Bytes transferred</span>
-            <strong>{formatBytes(backend.history.reduce((total, entry) => total + entry.summary.totalBytes, 0))}</strong>
-            <p>Totals are computed from persisted backend summaries.</p>
-          </article>
-        </div>
-
-        <label className="desktop-field">
-          <span>Search history</span>
+        <div className="field">
           <input
+            className="input"
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search by device, platform, mode, or session id"
+            placeholder="Search by peer, mode, or file"
             value={query}
           />
-        </label>
+        </div>
 
-        {filteredHistory.length ? (
-          <div className="desktop-file-table">
-            <table>
-              <thead>
-                <tr>
-                  <th>Session</th>
-                  <th>Peer</th>
-                  <th>Mode</th>
-                  <th>Files</th>
-                  <th>Bytes</th>
-                  <th>Status</th>
-                  <th>Closed</th>
-                  <th>Action</th>
+        {filtered.length ? (
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Session</th>
+                <th>Peer</th>
+                <th>Mode</th>
+                <th>Files</th>
+                <th>Bytes</th>
+                <th>State</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((entry) => (
+                <tr key={entry.id}>
+                  <td>{entry.id.slice(0, 8)}</td>
+                  <td>{entry.peerDevice?.name ?? '—'}</td>
+                  <td>{entry.mode}</td>
+                  <td>{entry.fileCount}</td>
+                  <td>{formatBytes(entry.summary.totalBytes)}</td>
+                  <td>
+                    <Badge tone={entry.state === 'failed' ? 'amber' : entry.state === 'completed' ? 'green' : 'blue'}>
+                      {entry.state}
+                    </Badge>
+                  </td>
+                  <td>
+                    <button
+                      className="link"
+                      onClick={() => setSelectedId(entry.id === selectedId ? null : entry.id)}
+                      type="button"
+                    >
+                      {entry.id === selectedId ? 'Hide' : 'View files'}
+                    </button>
+                  </td>
                 </tr>
-              </thead>
-              <tbody>
-                {filteredHistory.map((entry) => (
-                  <tr key={entry.id}>
-                    <td>
-                      <div className="desktop-file-table__name">
-                        <strong>{entry.id.slice(0, 8)}</strong>
-                        <span>{entry.summary.totalFiles} files</span>
-                      </div>
-                    </td>
-                    <td>{entry.peerDevice?.name ?? 'Unpaired phone session'}</td>
-                    <td>{entry.mode}</td>
-                    <td>
-                      <div className="desktop-history-files">
-                        {entry.files.length ? (
-                          entry.files.slice(0, 3).map((file) => (
-                            <a className="desktop-link-button desktop-link-button--inline" href={backend.downloadUrl(file.id)} key={file.id}>
-                              {file.name}
-                            </a>
-                          ))
-                        ) : (
-                          <span className="desktop-history-card__meta">No files</span>
-                        )}
-                        {entry.files.length > 3 ? (
-                          <span className="desktop-history-card__meta">+{entry.files.length - 3} more</span>
-                        ) : null}
-                      </div>
-                    </td>
-                    <td>{formatBytes(entry.summary.totalBytes)}</td>
-                    <td>{entry.state}</td>
-                    <td>{entry.closedAt ?? entry.updatedAt}</td>
-                    <td>
-                      <button
-                        className="desktop-link-button desktop-link-button--inline"
-                        onClick={() => setSelectedHistoryId(entry.id)}
-                        type="button"
-                      >
-                        {selectedHistoryId === entry.id ? 'Selected' : 'View all'}
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+              ))}
+            </tbody>
+          </table>
         ) : (
-          <div className="desktop-empty-state">
-            <p>{backend.history.length ? 'No sessions matched that search.' : 'No closed sessions have been persisted yet.'}</p>
-          </div>
+          <div className="empty">{backend.history.length ? 'No match.' : 'No closed sessions yet.'}</div>
         )}
+      </section>
 
-        {selectedEntry ? (
-          <div className="desktop-panel-stack">
-            <SectionHeading
-              eyebrow="Re-download"
-              title={`Files from session ${selectedEntry.id.slice(0, 8)}`}
-              description="Choose any stored file below to download it again from the persisted session history."
-            />
-
-            <div className="desktop-summary-strip">
-              <article className="desktop-summary-card">
-                <span>Peer</span>
-                <strong>{selectedEntry.peerDevice?.name ?? 'Unpaired phone session'}</strong>
-                <p>{selectedEntry.peerDevice?.platform ?? 'phone'} - {selectedEntry.mode}</p>
-              </article>
-              <article className="desktop-summary-card">
-                <span>Files</span>
-                <strong>{selectedEntry.fileCount}</strong>
-                <p>{selectedEntry.closedAt ?? selectedEntry.updatedAt}</p>
-              </article>
-              <article className="desktop-summary-card">
-                <span>State</span>
-                <strong>{selectedEntry.state}</strong>
-                <p>{formatBytes(selectedEntry.summary.totalBytes)} stored in this session.</p>
-              </article>
-            </div>
-
-            <div className="desktop-history-files">
-              {selectedEntry.files.length ? (
-                selectedEntry.files.map((file) => (
-                  <article className="desktop-history-card" key={file.id}>
-                    <div className="desktop-history-card__copy">
-                      <strong>{file.name}</strong>
-                      <p>
-                        {formatBytes(file.size)} - {file.relativePath && file.relativePath !== file.name ? file.relativePath : file.mimeType}
-                      </p>
-                    </div>
-                    <div className="desktop-chip-row">
-                      <Badge tone={file.downloadedAt ? 'green' : 'blue'}>{file.status}</Badge>
-                      <a className="desktop-link-button desktop-link-button--inline" href={backend.downloadUrl(file.id)}>
-                        Download
-                      </a>
-                    </div>
-                  </article>
-                ))
-              ) : (
-                <div className="desktop-empty-state">
-                  <p>No files were persisted for this session.</p>
+      {selectedEntry ? (
+        <section className="card">
+          <p className="card__eyebrow">Session {selectedEntry.id.slice(0, 8)}</p>
+          <h2 className="card__title">
+            {selectedEntry.files.length} stored file{selectedEntry.files.length === 1 ? '' : 's'}
+          </h2>
+          {selectedEntry.files.length ? (
+            <div className="list">
+              {selectedEntry.files.map((file) => (
+                <div className="row" key={file.id}>
+                  <div className="row__copy">
+                    <strong>{file.name}</strong>
+                    <span>
+                      {formatBytes(file.size)} · {file.direction} · {file.status}
+                      {file.relativePath && file.relativePath !== file.name ? ` · ${file.relativePath}` : ''}
+                    </span>
+                  </div>
+                  <div className="topbar__actions">
+                    <a className="link" href={backend.downloadUrl(file.id)}>
+                      {file.downloadedAt ? 'Re-download' : 'Download'}
+                    </a>
+                  </div>
                 </div>
-              )}
+              ))}
             </div>
-          </div>
-        ) : null}
-      </GlassPanel>
-    </div>
+          ) : (
+            <div className="empty">No files persisted for this session.</div>
+          )}
+          {selectedEntry.state === 'failed' ? (
+            <div className="topbar__actions">
+              <Button variant="secondary" onClick={() => void backend.refresh()}>
+                Retry transfer (re-pair to continue)
+              </Button>
+              <Button variant="ghost" onClick={() => setSelectedId(null)}>
+                Dismiss
+              </Button>
+            </div>
+          ) : null}
+        </section>
+      ) : null}
+    </>
   );
 }

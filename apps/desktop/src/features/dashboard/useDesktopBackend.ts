@@ -8,8 +8,11 @@ import {
   type ClipboardState,
   type DashboardResponse,
   type DiscoveryDeviceRecord,
+  type GuestShareSummary,
   type HistoryEntry,
+  type KnownDeviceRecord,
   type LiveSessionRecord,
+  type TrustedDeviceRecord,
   type UploadSessionRecord,
   type UpdateSettingsRequest,
 } from '@dropbeam/protocol';
@@ -17,14 +20,8 @@ import {
 const client = new DropbeamBackendClient(resolveBackendOrigin(import.meta.env.VITE_DROPBEAM_API));
 
 function resolvePhoneOrigin(hostnameOverride?: string | null) {
-  if (typeof window === 'undefined') {
-    return 'http://localhost:5174';
-  }
-
-  if (import.meta.env.VITE_DROPBEAM_PHONE_ORIGIN) {
-    return import.meta.env.VITE_DROPBEAM_PHONE_ORIGIN;
-  }
-
+  if (typeof window === 'undefined') return 'http://localhost:5174';
+  if (import.meta.env.VITE_DROPBEAM_PHONE_ORIGIN) return import.meta.env.VITE_DROPBEAM_PHONE_ORIGIN;
   const hostname = hostnameOverride || window.location.hostname || 'localhost';
   return `${window.location.protocol}//${hostname}:5174`;
 }
@@ -35,6 +32,9 @@ export function useDesktopBackend() {
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [sessions, setSessions] = useState<LiveSessionRecord[]>([]);
   const [devices, setDevices] = useState<DiscoveryDeviceRecord[]>([]);
+  const [trustedDevices, setTrustedDevices] = useState<TrustedDeviceRecord[]>([]);
+  const [knownDevices, setKnownDevices] = useState<KnownDeviceRecord[]>([]);
+  const [guestShares, setGuestShares] = useState<GuestShareSummary[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
@@ -48,19 +48,18 @@ export function useDesktopBackend() {
       client.sessions(),
       client.discovery(),
     ]);
-
     setHealth(nextHealth);
     setDashboard(nextDashboard);
     setHistory(nextHistory);
     setSessions(nextSessions);
     setDevices(nextDevices);
+    setTrustedDevices(nextDashboard.trustedDevices ?? []);
+    setKnownDevices(nextDashboard.knownDevices ?? []);
+    setGuestShares(nextDashboard.guestShares ?? []);
     setSelectedSessionId((current) => {
-      if (current && nextSessions.some((session) => session.id === current)) {
-        return current;
-      }
-
+      if (current && nextSessions.some((s) => s.id === current)) return current;
       return (
-        nextSessions.find((session) => !['closed', 'completed', 'failed'].includes(session.state))?.id ??
+        nextSessions.find((s) => !['closed', 'completed', 'failed'].includes(s.state))?.id ??
         nextSessions[0]?.id ??
         null
       );
@@ -69,31 +68,22 @@ export function useDesktopBackend() {
 
   useEffect(() => {
     let cancelled = false;
-
     const load = async () => {
       try {
         setError(null);
         await refresh();
       } catch (loadError) {
-        if (!cancelled) {
-          setError(loadError instanceof Error ? loadError.message : 'Failed to load desktop backend');
-        }
+        if (!cancelled) setError(loadError instanceof Error ? loadError.message : 'Failed to load desktop backend');
       } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
+        if (!cancelled) setLoading(false);
       }
     };
-
     void load();
     const unsubscribe = client.subscribe(() => {
       void refresh().catch((eventError) => {
-        if (!cancelled) {
-          setError(eventError instanceof Error ? eventError.message : 'Failed to refresh live session state');
-        }
+        if (!cancelled) setError(eventError instanceof Error ? eventError.message : 'Failed to refresh');
       });
     });
-
     return () => {
       cancelled = true;
       unsubscribe();
@@ -102,13 +92,8 @@ export function useDesktopBackend() {
 
   const activeSession = useMemo(
     () =>
-      sessions.find((session) => session.id === selectedSessionId) ??
-      sessions.find(
-        (session) =>
-          session.state !== 'closed' &&
-          session.state !== 'completed' &&
-          session.state !== 'failed',
-      ) ??
+      sessions.find((s) => s.id === selectedSessionId) ??
+      sessions.find((s) => !['closed', 'completed', 'failed'].includes(s.state)) ??
       null,
     [selectedSessionId, sessions],
   );
@@ -117,74 +102,87 @@ export function useDesktopBackend() {
   const clipboard: ClipboardState | null = dashboard?.clipboard ?? null;
   const activeUploads: UploadSessionRecord[] = dashboard?.activeUploads ?? [];
 
-  const createSession = useCallback(async () => {
-    setBusy('create-session');
-    setError(null);
-
-    try {
-      const lanHost = devices.find((device) => device.local)?.host ?? null;
-      const session = await client.createSession({
-        mode: settings?.preferredMode,
-        deviceName: settings?.deviceName,
-        deviceIcon: settings?.deviceIcon,
-        origin: resolvePhoneOrigin(lanHost),
-        backendOrigin: replaceOriginHostname(resolveBackendOrigin(import.meta.env.VITE_DROPBEAM_API), lanHost),
-      });
-      setSelectedSessionId(session.id);
-      await refresh();
-    } catch (createError) {
-      setError(createError instanceof Error ? createError.message : 'Failed to create session');
-    } finally {
-      setBusy(null);
-    }
-  }, [devices, refresh, settings?.deviceIcon, settings?.deviceName, settings?.preferredMode]);
-
-  const uploadFiles = useCallback(
-    async (files: FileList | File[]) => {
-      if (!activeSession) {
-        setError('Create and connect a session before uploading desktop files.');
-        return;
-      }
-
-      setBusy('upload-files');
+  const createSession = useCallback(
+    async (input: { mode?: 'wifi' | 'usb' | 'hotspot'; multiDevice?: boolean; maxDevices?: number } = {}) => {
+      setBusy('create-session');
       setError(null);
-
       try {
-        for (const file of Array.from(files)) {
-          await client.uploadFile(
-            activeSession.id,
-            'desktop-to-phone',
-            file,
-            {
-              deviceName: settings?.deviceName ?? 'DropBeam Desktop',
-              relativePath: getRelativePath(file),
-              transferMode: activeSession.mode,
-            },
-          );
-        }
+        const lanHost = devices.find((d) => d.local)?.host ?? null;
+        const session = await client.createSession({
+          mode: input.mode ?? settings?.preferredMode,
+          deviceName: settings?.deviceName,
+          deviceIcon: settings?.deviceIcon,
+          multiDevice: input.multiDevice,
+          maxDevices: input.maxDevices,
+          origin: resolvePhoneOrigin(lanHost),
+          backendOrigin: replaceOriginHostname(resolveBackendOrigin(import.meta.env.VITE_DROPBEAM_API), lanHost),
+        });
+        setSelectedSessionId(session.id);
         await refresh();
-      } catch (uploadError) {
-        setError(uploadError instanceof Error ? uploadError.message : 'Desktop upload failed');
+        return session;
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Failed to create session');
+        return null;
       } finally {
         setBusy(null);
       }
     },
-    [activeSession, refresh, settings?.deviceName],
+    [devices, refresh, settings?.deviceIcon, settings?.deviceName, settings?.preferredMode],
+  );
+
+  const acceptIncoming = useCallback(
+    async (sessionId: string, trust = false) => {
+      setBusy('accept-session');
+      try {
+        await client.acceptSession(sessionId, trust);
+        await refresh();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Failed to accept');
+      } finally {
+        setBusy(null);
+      }
+    },
+    [refresh],
+  );
+
+  const declineIncoming = useCallback(
+    async (sessionId: string, reason = 'declined') => {
+      setBusy('decline-session');
+      try {
+        await client.declineSession(sessionId, reason);
+        await refresh();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Failed to decline');
+      } finally {
+        setBusy(null);
+      }
+    },
+    [refresh],
+  );
+
+  const regenerateSession = useCallback(
+    async (sessionId: string) => {
+      setBusy('regenerate-session');
+      try {
+        await client.regenerateSession(sessionId);
+        await refresh();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Failed to regenerate');
+      } finally {
+        setBusy(null);
+      }
+    },
+    [refresh],
   );
 
   const closeSession = useCallback(async () => {
-    if (!activeSession) {
-      return;
-    }
-
+    if (!activeSession) return;
     setBusy('close-session');
-    setError(null);
-
     try {
       await client.closeSession(activeSession.id, 'Closed from desktop UI');
       await refresh();
-    } catch (closeError) {
-      setError(closeError instanceof Error ? closeError.message : 'Failed to close session');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to close');
     } finally {
       setBusy(null);
     }
@@ -193,13 +191,66 @@ export function useDesktopBackend() {
   const updateSettings = useCallback(
     async (patch: UpdateSettingsRequest) => {
       setBusy('update-settings');
-      setError(null);
-
       try {
         await client.updateSettings(patch);
         await refresh();
-      } catch (settingsError) {
-        setError(settingsError instanceof Error ? settingsError.message : 'Failed to update settings');
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Failed to save settings');
+      } finally {
+        setBusy(null);
+      }
+    },
+    [refresh],
+  );
+
+  const updateClipboard = useCallback(
+    async (text: string) => {
+      setBusy('update-clipboard');
+      try {
+        await client.updateClipboard({
+          text,
+          sourceDeviceName: settings?.deviceName ?? 'DropBeam Desktop',
+          sourceRole: 'desktop',
+        });
+        await refresh();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Failed to sync clipboard');
+      } finally {
+        setBusy(null);
+      }
+    },
+    [refresh, settings?.deviceName],
+  );
+
+  const setTrusted = useCallback(
+    async (fingerprint: string, autoAccept = true) => {
+      await client.setTrustedDevice(fingerprint, autoAccept);
+      await refresh();
+    },
+    [refresh],
+  );
+
+  const removeTrusted = useCallback(
+    async (fingerprint: string) => {
+      await client.removeTrustedDevice(fingerprint);
+      await refresh();
+    },
+    [refresh],
+  );
+
+  const createGuestShare = useCallback(
+    async (input: { ttlMs?: number; maxUses?: number }, files: File[]) => {
+      setBusy('create-guest');
+      try {
+        const share = await client.createGuestShare(input);
+        for (const file of files) {
+          await client.addGuestFile(share.token, file);
+        }
+        await refresh();
+        return share;
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Failed to create guest share');
+        return null;
       } finally {
         setBusy(null);
       }
@@ -215,52 +266,40 @@ export function useDesktopBackend() {
     dashboard,
     devices,
     error,
+    guestShares,
     health,
     history,
+    knownDevices,
     loading,
     selectedSessionId,
     sessions,
     settings,
+    trustedDevices,
+    acceptIncoming,
     closeSession,
+    createGuestShare,
     createSession,
-    downloadUrl: client.downloadUrl.bind(client),
+    declineIncoming,
     downloadFile: client.downloadFile.bind(client),
+    downloadUrl: client.downloadUrl.bind(client),
+    guestUrl: client.guestUrl.bind(client),
+    benchmarkSend: client.benchmarkSend.bind(client),
+    benchmarkReceive: client.benchmarkReceive.bind(client),
     refresh,
+    regenerateSession,
+    removeTrusted,
     setSelectedSessionId,
+    setTrusted,
+    updateClipboard,
     updateSettings,
-    updateClipboard: async (text: string) => {
-      setBusy('update-clipboard');
-      setError(null);
-
-      try {
-        await client.updateClipboard({
-          text,
-          sourceDeviceName: settings?.deviceName ?? 'DropBeam Desktop',
-          sourceRole: 'desktop',
-        });
-        await refresh();
-      } catch (clipboardError) {
-        setError(clipboardError instanceof Error ? clipboardError.message : 'Failed to sync clipboard');
-      } finally {
-        setBusy(null);
-      }
-    },
-    uploadFiles,
+    uploadFile: client.uploadFile.bind(client),
   };
 }
 
 export type DesktopBackendState = ReturnType<typeof useDesktopBackend>;
 
-function getRelativePath(file: File) {
-  const candidate = (file as File & { webkitRelativePath?: string }).webkitRelativePath;
-  return candidate?.trim() ? candidate : undefined;
-}
-
 function replaceOriginHostname(origin: string, hostnameOverride?: string | null) {
-  if (!hostnameOverride) {
-    return origin;
-  }
-
+  if (!hostnameOverride) return origin;
   try {
     const url = new URL(origin);
     if (url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '0.0.0.0') {

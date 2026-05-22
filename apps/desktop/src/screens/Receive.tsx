@@ -1,130 +1,171 @@
-import { Badge, GlassPanel, SectionHeading } from '@dropbeam/shared-ui';
+import { useState } from 'react';
+
+import { Badge, Button } from '@dropbeam/shared-ui';
 import { formatBytes } from '@dropbeam/protocol';
 
+import { Modal } from '../components/Modal.js';
 import type { DesktopBackendState } from '../features/dashboard/useDesktopBackend.js';
 
 export function Receive({ backend }: { backend: DesktopBackendState }) {
-  const files = backend.activeSession?.files['phone-to-desktop'] ?? [];
-  const folderReady = files.some((file) => file.relativePath && file.relativePath !== file.name);
+  const [acceptSomeBatchId, setAcceptSomeBatchId] = useState<string | null>(null);
+  const [pickedFileIds, setPickedFileIds] = useState<Set<string>>(new Set());
+
+  const incomingBatches = backend.sessions.flatMap((session) =>
+    (session.pendingTransfers ?? []).map((batch) => ({ session, batch })),
+  );
+
+  if (!backend.activeSession && !incomingBatches.length) {
+    return (
+      <section className="card">
+        <p className="card__eyebrow">No active session</p>
+        <h2 className="card__title">Start a session to receive files</h2>
+        <p className="card__copy">Open Home and create a new session so your phone can connect.</p>
+      </section>
+    );
+  }
+
+  const receivedFiles = backend.sessions.flatMap((s) => s.files['phone-to-desktop'] ?? []);
+  const acceptSomeBatch = incomingBatches.find((b) => b.batch.id === acceptSomeBatchId);
 
   return (
-    <div className="desktop-screen">
-      <GlassPanel className="desktop-panel-stack">
-        <SectionHeading
-          eyebrow="Receive"
-          title="Phone uploads waiting on desktop"
-          description="These files are stored in the live backend. Download individual files or rebuild the original directory structure with save-all."
-        />
+    <>
+      {incomingBatches.length ? (
+        <section className="card">
+          <p className="card__eyebrow">Incoming requests</p>
+          <h2 className="card__title">{incomingBatches.length} pending</h2>
+          <div className="list">
+            {incomingBatches.map(({ session, batch }) => {
+              const totalBytes = batch.files.reduce((s, f) => s + f.size, 0);
+              return (
+                <div className="row" key={batch.id} style={{ gridTemplateColumns: '1fr' }}>
+                  <div className="row__copy">
+                    <strong>
+                      📥 {batch.sourceDeviceName ?? session.peerDevice?.name ?? 'Phone'} wants to send {batch.files.length} file
+                      {batch.files.length === 1 ? '' : 's'}
+                    </strong>
+                    <span>{formatBytes(totalBytes)} · {batch.direction}</span>
+                  </div>
+                  <div className="topbar__actions">
+                    <Button onClick={() => void acceptBatch(session.id, batch.id, null)} variant="primary">
+                      Accept All
+                    </Button>
+                    <Button
+                      onClick={() => {
+                        setAcceptSomeBatchId(batch.id);
+                        setPickedFileIds(new Set(batch.files.map((f) => f.id)));
+                      }}
+                      variant="secondary"
+                    >
+                      Accept Some
+                    </Button>
+                    <Button onClick={() => void declineBatch(session.id, batch.id)} variant="ghost">
+                      Decline
+                    </Button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      ) : null}
 
-        <div className="desktop-summary-strip">
-          <article className="desktop-summary-card">
-            <span>Delivery</span>
-            <strong>Live download</strong>
-            <p>Files are immediately downloadable through the backend once uploaded.</p>
-          </article>
-          <article className="desktop-summary-card">
-            <span>Queue</span>
-            <strong>{files.length}</strong>
-            <p>Phone-to-desktop items appear here as soon as the phone uploads them.</p>
-          </article>
-          <article className="desktop-summary-card">
-            <span>Folders preserved</span>
-            <strong>{folderReady ? 'Yes' : 'Flat files'}</strong>
-            <p>Use save-all to recreate nested folders when a directory was uploaded.</p>
-          </article>
-        </div>
+      <section className="card">
+        <p className="card__eyebrow">From your phone</p>
+        <h2 className="card__title">
+          {receivedFiles.length ? `${receivedFiles.length} file${receivedFiles.length === 1 ? '' : 's'} ready` : 'Waiting for uploads'}
+        </h2>
 
-        <div className="desktop-actions">
-          <Badge tone="blue">
-            {folderReady ? 'Folder-aware transfer metadata available' : 'Standard file download mode'}
-          </Badge>
-          <button
-            className="desktop-link-button"
-            disabled={!files.length}
-            onClick={() => void saveFilesToDirectory(files, backend.downloadUrl)}
-            type="button"
-          >
-            Save all to folder
-          </button>
-        </div>
-
-        {files.length ? (
-          <div className="desktop-file-table">
-            <table>
-              <thead>
-                <tr>
-                  <th>File</th>
-                  <th>Source</th>
-                  <th>Mode</th>
-                  <th>Action</th>
-                </tr>
-              </thead>
-              <tbody>
-                {files.map((file) => (
-                  <tr key={file.id}>
-                    <td>
-                      <div className="desktop-file-table__name">
-                        <strong>{file.name}</strong>
-                        <span>{formatBytes(file.size)}</span>
-                      </div>
-                    </td>
-                    <td>{file.sourceDeviceName ?? 'Phone'}</td>
-                    <td>
-                      {file.relativePath && file.relativePath !== file.name ? 'Folder preserved' : 'Single file'}
-                    </td>
-                    <td>
-                      <a className="desktop-link-button" href={backend.downloadUrl(file.id)}>
-                        Download
-                      </a>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+        {receivedFiles.length ? (
+          <div className="list">
+            {receivedFiles.map((file) => (
+              <div className="row" key={file.id}>
+                <div className="row__copy">
+                  <strong>{file.name}</strong>
+                  <span>
+                    {formatBytes(file.size)} · {file.sourceDeviceName ?? 'Phone'}
+                    {file.relativePath && file.relativePath !== file.name ? ` · ${file.relativePath}` : ''}
+                  </span>
+                </div>
+                <a className="link" href={backend.downloadUrl(file.id)}>
+                  Download
+                </a>
+              </div>
+            ))}
           </div>
         ) : (
-          <div className="desktop-empty-state">
-            <p>No phone uploads are available yet.</p>
-          </div>
+          <div className="empty">Files your phone uploads will appear here as soon as you tap Accept on its prompt.</div>
         )}
-      </GlassPanel>
-    </div>
+      </section>
+
+      {acceptSomeBatch ? (
+        <Modal onClose={() => setAcceptSomeBatchId(null)}>
+          <div className="modal__header">
+            <span className="modal__step">Accept some</span>
+            <h2 className="modal__title">Pick the files you want</h2>
+          </div>
+          <div className="list">
+            {acceptSomeBatch.batch.files.map((file) => {
+              const picked = pickedFileIds.has(file.id);
+              return (
+                <label
+                  className={`row row--selectable${picked ? ' row--selected' : ''}`}
+                  key={file.id}
+                >
+                  <div className="row__copy">
+                    <strong>{file.name}</strong>
+                    <span>{formatBytes(file.size)} · {file.mimeType}</span>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={picked}
+                    onChange={(event) => {
+                      const next = new Set(pickedFileIds);
+                      if (event.target.checked) next.add(file.id);
+                      else next.delete(file.id);
+                      setPickedFileIds(next);
+                    }}
+                    style={{ width: 18, height: 18 }}
+                  />
+                </label>
+              );
+            })}
+          </div>
+          <div className="modal__actions">
+            <Button onClick={() => setAcceptSomeBatchId(null)} variant="ghost">
+              Cancel
+            </Button>
+            <Button
+              disabled={!pickedFileIds.size}
+              onClick={() => void acceptBatch(acceptSomeBatch.session.id, acceptSomeBatch.batch.id, [...pickedFileIds])}
+              variant="primary"
+            >
+              Accept {pickedFileIds.size} of {acceptSomeBatch.batch.files.length}
+            </Button>
+          </div>
+        </Modal>
+      ) : null}
+    </>
   );
+
+  async function acceptBatch(sessionId: string, batchId: string, fileIds: string[] | null) {
+    const url = `${resolveOrigin()}/api/sessions/${encodeURIComponent(sessionId)}/transfers/${encodeURIComponent(batchId)}/accept`;
+    await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(fileIds ? { fileIds } : {}),
+    });
+    setAcceptSomeBatchId(null);
+    await backend.refresh();
+  }
+
+  async function declineBatch(sessionId: string, batchId: string) {
+    const url = `${resolveOrigin()}/api/sessions/${encodeURIComponent(sessionId)}/transfers/${encodeURIComponent(batchId)}/decline`;
+    await fetch(url, { method: 'POST' });
+    await backend.refresh();
+  }
 }
 
-async function saveFilesToDirectory(
-  files: Array<{ id: string; name: string; relativePath?: string | null }>,
-  resolveDownloadUrl: (fileId: string) => string,
-) {
-  const directoryWindow = window as Window & typeof globalThis & {
-    showDirectoryPicker?: () => Promise<FileSystemDirectoryHandle>;
-  };
-
-  if (typeof window === 'undefined' || typeof directoryWindow.showDirectoryPicker !== 'function') {
-    window.alert('Directory save is only available in compatible Chromium-based desktop browsers.');
-    return;
-  }
-
-  const root = await directoryWindow.showDirectoryPicker();
-
-  for (const file of files) {
-    const relativePath = file.relativePath ?? file.name;
-    const parts = relativePath.split('/').filter(Boolean);
-    const leafName = parts.pop() ?? file.name;
-    let directory = root;
-
-    for (const part of parts) {
-      directory = await directory.getDirectoryHandle(part, { create: true });
-    }
-
-    const response = await fetch(resolveDownloadUrl(file.id));
-    if (!response.ok) {
-      throw new Error(`Failed to download ${file.name}`);
-    }
-
-    const handle = await directory.getFileHandle(leafName, { create: true });
-    const writable = await handle.createWritable();
-    await writable.write(await response.blob());
-    await writable.close();
-  }
+function resolveOrigin() {
+  if (typeof window === 'undefined') return 'http://127.0.0.1:17619';
+  return `${window.location.protocol}//${window.location.hostname}:17619`;
 }

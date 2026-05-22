@@ -1,21 +1,53 @@
-import type { CSSProperties, PropsWithChildren, ReactNode } from 'react';
+/**
+ * Bridge to React Native primitives.
+ * The existing screens were authored against a web stand-in API (style: CSSProperties, onPress).
+ * This module re-exports the real RN components so screens compile against either runtime.
+ *
+ * Note: some web-only style keys ("display: grid", "background: linear-gradient", etc.) won't
+ * render in RN at runtime; those screens render correctly on the web build (`expo start --web`)
+ * and will need follow-up styling for native. The component API stays compatible.
+ */
+import type { PropsWithChildren, ReactNode } from 'react';
+import {
+  View as RNView,
+  Text as RNText,
+  ScrollView as RNScrollView,
+  SafeAreaView as RNSafeAreaView,
+  Pressable as RNPressable,
+  TextInput as RNTextInput,
+  TouchableOpacity,
+  type StyleProp,
+  type ViewStyle,
+  type TextStyle,
+} from 'react-native';
 
-type NativeStyle = CSSProperties;
+type AnyStyle = StyleProp<ViewStyle> | StyleProp<TextStyle> | Record<string, unknown>;
 
-export function View({ children, style }: PropsWithChildren<{ style?: NativeStyle }>) {
-  return <div style={style}>{children}</div>;
+export function View({ children, style }: PropsWithChildren<{ style?: AnyStyle }>) {
+  return <RNView style={style as StyleProp<ViewStyle>}>{children}</RNView>;
 }
 
-export function Text({ children, style }: PropsWithChildren<{ style?: NativeStyle }>) {
-  return <div style={style}>{children}</div>;
+export function Text({ children, style }: PropsWithChildren<{ style?: AnyStyle }>) {
+  return <RNText style={style as StyleProp<TextStyle>}>{children}</RNText>;
 }
 
-export function ScrollView({ children, style }: PropsWithChildren<{ style?: NativeStyle }>) {
-  return <div style={{ overflowY: 'auto', ...style }}>{children}</div>;
+export function ScrollView({
+  children,
+  style,
+  contentContainerStyle,
+}: PropsWithChildren<{ style?: AnyStyle; contentContainerStyle?: AnyStyle }>) {
+  return (
+    <RNScrollView
+      contentContainerStyle={contentContainerStyle as StyleProp<ViewStyle>}
+      style={style as StyleProp<ViewStyle>}
+    >
+      {children}
+    </RNScrollView>
+  );
 }
 
-export function SafeAreaView({ children, style }: PropsWithChildren<{ style?: NativeStyle }>) {
-  return <div style={style}>{children}</div>;
+export function SafeAreaView({ children, style }: PropsWithChildren<{ style?: AnyStyle }>) {
+  return <RNSafeAreaView style={style as StyleProp<ViewStyle>}>{children}</RNSafeAreaView>;
 }
 
 export function Pressable({
@@ -23,23 +55,15 @@ export function Pressable({
   style,
   onPress,
   disabled,
-}: PropsWithChildren<{ style?: NativeStyle; onPress?: () => void; disabled?: boolean }>) {
+}: PropsWithChildren<{ style?: AnyStyle; onPress?: () => void; disabled?: boolean }>) {
   return (
-    <button
+    <RNPressable
       disabled={disabled}
-      onClick={onPress}
-      style={{
-        background: 'transparent',
-        border: 0,
-        color: 'inherit',
-        cursor: disabled ? 'not-allowed' : 'pointer',
-        padding: 0,
-        ...style,
-      }}
-      type="button"
+      onPress={onPress}
+      style={style as StyleProp<ViewStyle>}
     >
       {children}
-    </button>
+    </RNPressable>
   );
 }
 
@@ -49,25 +73,28 @@ export function TextInput({
   value,
   placeholder,
 }: {
-  style?: NativeStyle;
+  style?: AnyStyle;
   onChangeText?: (value: string) => void;
   value: string;
   placeholder?: string;
 }) {
   return (
-    <input
-      onChange={(event) => onChangeText?.(event.target.value)}
+    <RNTextInput
+      onChangeText={onChangeText}
       placeholder={placeholder}
-      style={{
-        backgroundColor: '#0a1320',
-        border: '1px solid #274860',
-        borderRadius: 14,
-        color: '#edf5ff',
-        fontSize: 16,
-        padding: '14px 16px',
-        width: '100%',
-        ...style,
-      }}
+      placeholderTextColor="#5b7894"
+      style={[
+        {
+          backgroundColor: '#0a1320',
+          borderColor: '#274860',
+          borderWidth: 1,
+          borderRadius: 14,
+          color: '#edf5ff',
+          fontSize: 16,
+          padding: 14,
+        },
+        style as StyleProp<TextStyle>,
+      ]}
       value={value}
     />
   );
@@ -77,37 +104,40 @@ export function Button({
   children,
   style,
   onPress,
-  onClick,
   disabled,
-}: PropsWithChildren<{
-  style?: NativeStyle;
-  onPress?: () => void;
-  onClick?: () => void;
-  disabled?: boolean;
-}>) {
+}: PropsWithChildren<{ style?: AnyStyle; onPress?: () => void; onClick?: () => void; disabled?: boolean }>) {
   return (
-    <button
+    <TouchableOpacity
+      activeOpacity={0.78}
       disabled={disabled}
-      onClick={onPress ?? onClick}
-      style={{
-        backgroundColor: disabled ? '#223448' : '#3aa9ff',
-        border: '1px solid transparent',
-        borderRadius: 16,
-        color: disabled ? '#7b8da4' : '#03101b',
-        fontSize: 14,
-        fontWeight: 700,
-        letterSpacing: 0.4,
-        padding: '14px 16px',
-        textTransform: 'uppercase',
-        ...style,
-      }}
-      type="button"
+      onPress={onPress}
+      style={[
+        {
+          backgroundColor: disabled ? '#223448' : '#3aa9ff',
+          borderRadius: 16,
+          paddingVertical: 14,
+          paddingHorizontal: 16,
+          alignItems: 'center',
+          justifyContent: 'center',
+        },
+        style as StyleProp<ViewStyle>,
+      ]}
     >
-      {children}
-    </button>
+      <RNText
+        style={{
+          color: disabled ? '#7b8da4' : '#03101b',
+          fontSize: 14,
+          fontWeight: '700',
+          letterSpacing: 0.4,
+          textTransform: 'uppercase',
+        }}
+      >
+        {children as ReactNode}
+      </RNText>
+    </TouchableOpacity>
   );
 }
 
 export function Spacer({ size = 16 }: { size?: number }) {
-  return <div style={{ height: size }} />;
+  return <RNView style={{ height: size }} />;
 }

@@ -17,6 +17,7 @@ export interface SessionTicket {
   qrValue: string;
   pairingUrl: string;
   guestAllowed?: boolean;
+  expiresAt?: string | null;
 }
 
 export interface DiscoveryDeviceRecord {
@@ -113,6 +114,9 @@ export interface LiveSessionRecord {
   createdAt: string;
   updatedAt: string;
   closedAt?: string | null;
+  expiresAt?: string | null;
+  multiDevice?: boolean;
+  maxDevices?: number;
   localDevice: {
     name: string;
     role: 'desktop';
@@ -125,13 +129,28 @@ export interface LiveSessionRecord {
     transport: TransferMode;
     address?: string | null;
     icon?: DeviceIcon | null;
+    fingerprint?: string | null;
   } | null;
   pairing: {
     ticket: SessionTicket;
     guestAllowed?: boolean;
     encrypted?: boolean;
     verifiedAt?: string | null;
+    acceptedAt?: string | null;
   };
+  pendingRequest?: {
+    id: string;
+    requestedAt: string;
+    peer: {
+      name: string;
+      platform: string;
+      transport: TransferMode;
+      icon?: DeviceIcon | null;
+      address?: string | null;
+      fingerprint?: string | null;
+    };
+  } | null;
+  pendingTransfers?: PendingTransferBatch[];
   files: Record<LiveTransferDirection, StoredFileRecord[]>;
   queue: LiveQueueState;
   summary: LiveSessionSummary;
@@ -168,10 +187,64 @@ export interface BackendSettings {
   deviceName: string;
   deviceIcon: DeviceIcon;
   preferredMode: TransferMode;
+  downloadFolder: string;
+  connectionMode: 'auto' | 'wifi' | 'usb';
   autoCloseAfterDownload: boolean;
-  guestModeEnabled: boolean;
+  autoAcceptTrusted: boolean;
+  onboardingComplete: boolean;
+  watchFolders: WatchFolderConfig[];
   createdAt: string;
   updatedAt: string;
+}
+
+export interface WatchFolderConfig {
+  id: string;
+  path: string;
+  destinationFingerprint: string;
+  destinationLabel: string;
+  fileTypes?: 'all' | 'images' | string[];
+  trigger: 'on-connect' | 'scheduled';
+}
+
+export interface TrustedDeviceRecord {
+  fingerprint: string;
+  name: string;
+  platform: string;
+  trustedAt: string;
+  autoAccept: boolean;
+}
+
+export interface KnownDeviceRecord {
+  fingerprint: string;
+  name: string;
+  platform: string;
+  icon?: DeviceIcon | null;
+  lastSeenAt: string;
+}
+
+export interface GuestShareSummary {
+  id: string;
+  token: string;
+  createdAt: string;
+  expiresAt: string;
+  maxUses: number;
+  uses: number;
+  files: number;
+}
+
+export interface PendingTransferBatch {
+  id: string;
+  direction: LiveTransferDirection;
+  sourceDeviceName: string | null;
+  requestedAt: string;
+  files: Array<{
+    id: string;
+    name: string;
+    size: number;
+    mimeType: string;
+    relativePath?: string | null;
+    lastModified?: number | null;
+  }>;
 }
 
 export interface BackendHealth {
@@ -223,9 +296,13 @@ export interface DashboardResponse {
     paired: number;
     transferring: number;
     completed: number;
+    pending: number;
   };
   history: LiveSessionRecord[];
   activeSessions: LiveSessionRecord[];
+  trustedDevices: TrustedDeviceRecord[];
+  knownDevices: KnownDeviceRecord[];
+  guestShares: GuestShareSummary[];
 }
 
 export interface CreateSessionRequest {
@@ -234,7 +311,8 @@ export interface CreateSessionRequest {
   deviceIcon?: DeviceIcon;
   origin?: string;
   backendOrigin?: string;
-  guestModeEnabled?: boolean;
+  multiDevice?: boolean;
+  maxDevices?: number;
 }
 
 export interface PairSessionRequest {
@@ -252,8 +330,12 @@ export interface UpdateSettingsRequest {
   deviceName?: string;
   deviceIcon?: DeviceIcon;
   preferredMode?: TransferMode;
+  downloadFolder?: string;
+  connectionMode?: 'auto' | 'wifi' | 'usb';
   autoCloseAfterDownload?: boolean;
-  guestModeEnabled?: boolean;
+  autoAcceptTrusted?: boolean;
+  onboardingComplete?: boolean;
+  watchFolders?: WatchFolderConfig[];
 }
 
 export interface UpdateClipboardRequest {

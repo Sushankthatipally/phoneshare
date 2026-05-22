@@ -1,5 +1,5 @@
-import { MobileApp } from '../src/screens/MobileApp.js';
+import { SendScreenView } from '../src/screens/SendScreen.js';
 
 export default function SendRoute() {
-  return <MobileApp initialScreen="send" />;
+  return <SendScreenView />;
 }

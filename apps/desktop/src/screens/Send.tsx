@@ -1,44 +1,41 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-import { Badge, Button, GlassPanel, SectionHeading } from '@dropbeam/shared-ui';
-import { chooseTransferChunkSize, formatBytes, resolveBackendOrigin, type LiveSessionRecord } from '@dropbeam/protocol';
+import { Badge, Button } from '@dropbeam/shared-ui';
+import { formatBytes } from '@dropbeam/protocol';
 
+import { Modal } from '../components/Modal.js';
 import type { DesktopBackendState } from '../features/dashboard/useDesktopBackend.js';
-
-const backendOrigin = resolveBackendOrigin(import.meta.env.VITE_DROPBEAM_API);
 
 type SendTargetState = {
   message: string;
   progress: number;
   status: 'idle' | 'uploading' | 'complete' | 'failed';
+  failedFiles: string[];
 };
 
-export function Send({ backend }: { backend: DesktopBackendState }) {
+type FolderMode = 'preserve' | 'zip' | 'flat';
+
+const LARGE_FILE_THRESHOLD = 4 * 1024 * 1024 * 1024;
+
+export function Send({
+  backend,
+  pendingSendPaths = [],
+  onClearPending,
+}: {
+  backend: DesktopBackendState;
+  pendingSendPaths?: string[];
+  onClearPending?: () => void;
+}) {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const folderInputRef = useRef<HTMLInputElement | null>(null);
   const [queuedFiles, setQueuedFiles] = useState<File[]>([]);
   const [selectedSessionIds, setSelectedSessionIds] = useState<string[]>([]);
   const [targetState, setTargetState] = useState<Record<string, SendTargetState>>({});
   const [sending, setSending] = useState(false);
-
-  const verifiedSessions = useMemo(() => {
-    return backend.sessions
-      .filter((session) => session.pairing.verifiedAt)
-      .slice()
-      .sort((left, right) => {
-        const leftTime = Date.parse(left.pairing.verifiedAt ?? left.updatedAt);
-        const rightTime = Date.parse(right.pairing.verifiedAt ?? right.updatedAt);
-        return rightTime - leftTime;
-      });
-  }, [backend.sessions]);
-
-  const selectedSessions = useMemo(() => {
-    return verifiedSessions.filter((session) => selectedSessionIds.includes(session.id));
-  }, [selectedSessionIds, verifiedSessions]);
-
-  const queuedBytes = useMemo(() => {
-    return queuedFiles.reduce((total, file) => total + file.size, 0);
-  }, [queuedFiles]);
+  const [folderPrompt, setFolderPrompt] = useState<File[] | null>(null);
+  const [folderMode, setFolderMode] = useState<FolderMode>('preserve');
+  const [largeFilePrompt, setLargeFilePrompt] = useState(false);
+  const [sendToSelf, setSendToSelf] = useState(false);
 
   useEffect(() => {
     if (folderInputRef.current) {
@@ -47,349 +44,431 @@ export function Send({ backend }: { backend: DesktopBackendState }) {
     }
   }, []);
 
+  const verifiedSessions = useMemo(
+    () => backend.sessions.filter((session) => session.pairing.verifiedAt),
+    [backend.sessions],
+  );
+
+  const queuedBytes = useMemo(
+    () => queuedFiles.reduce((total, file) => total + file.size, 0),
+    [queuedFiles],
+  );
+
+  const hasLargeFile = queuedFiles.some((f) => f.size >= LARGE_FILE_THRESHOLD);
+
   useEffect(() => {
-    setSelectedSessionIds((current) => {
-      const nextCurrent = current.filter((sessionId) => verifiedSessions.some((session) => session.id === sessionId));
-      if (nextCurrent.length) {
-        return nextCurrent;
-      }
-
-      if (!verifiedSessions.length) {
-        return [];
-      }
-
-      return verifiedSessions.slice(0, Math.min(2, verifiedSessions.length)).map((session) => session.id);
-    });
+    setSelectedSessionIds((current) => current.filter((id) => verifiedSessions.some((s) => s.id === id)));
   }, [verifiedSessions]);
 
-  useEffect(() => {
-    setTargetState((current) => {
-      const nextState: Record<string, SendTargetState> = {};
-
-      for (const session of selectedSessions) {
-        nextState[session.id] = current[session.id] ?? {
-          message: 'Ready to send',
-          progress: 0,
-          status: 'idle',
-        };
-      }
-
-      return nextState;
-    });
-  }, [selectedSessions]);
-
-  const quickStats = [
-    {
-      label: 'Queued files',
-      value: String(queuedFiles.length),
-      note: queuedFiles.length ? 'Local files are staged for the selected sessions.' : 'Choose files or a folder to build a live send queue.',
-    },
-    {
-      label: 'Targets',
-      value: String(selectedSessions.length),
-      note: selectedSessions.length
-        ? 'Only connected sessions can be selected for delivery.'
-        : 'No connected sessions are selected yet.',
-    },
-    {
-      label: 'Queued bytes',
-      value: formatBytes(queuedBytes),
-      note: queuedBytes ? 'The same file set is sent to every chosen session.' : 'Total upload size will appear here.',
-    },
-    {
-      label: 'Active lane',
-      value: backend.activeSession?.peerDevice?.name ?? 'None',
-      note: backend.activeSession?.pairing.verifiedAt
-        ? 'Current active session is encrypted and ready.'
-        : 'There is no connected active session yet.',
-    },
-  ];
-
   return (
-    <div className="desktop-screen">
-      <div className="desktop-send-layout">
-        <GlassPanel className="desktop-panel-stack">
-          <SectionHeading
-            eyebrow="Send"
-            title="Choose files or a folder"
-            description="Files selected here are uploaded to each verified session you choose. The screen uses live sessions and live backend uploads only."
-          />
-
-          <div className="desktop-security-strip">
-            <Badge tone={selectedSessions.length ? 'green' : 'amber'}>
-              {selectedSessions.length ? `${selectedSessions.length} connected targets` : 'select connected targets'}
-            </Badge>
-            <Badge tone="blue">{queuedFiles.length ? `${queuedFiles.length} files queued` : 'no files queued'}</Badge>
-            <Badge>{sending ? 'sending live' : 'idle'}</Badge>
-          </div>
-
-          <button className="desktop-drop-zone" onClick={() => inputRef.current?.click()} type="button">
-            <strong>Drop or choose desktop files</strong>
-            <p>
-              Use the file picker for individual files, or choose a folder to preserve relative paths across every
-              selected session.
-            </p>
-            <div className="desktop-drop-zone__meta">
-              <span>{queuedFiles.length ? `${queuedFiles.length} items staged` : 'No local files staged yet'}</span>
-              <span>{queuedBytes ? formatBytes(queuedBytes) : 'Waiting for files'}</span>
-            </div>
-          </button>
-
-          <div className="desktop-actions">
-            <input
-              hidden
-              multiple
-              onChange={(event) => {
-                const files = Array.from(event.target.files ?? []);
-                if (files.length) {
-                  setQueuedFiles(files);
-                }
-                event.target.value = '';
-              }}
-              ref={inputRef}
-              type="file"
-            />
-            <input
-              hidden
-              multiple
-              onChange={(event) => {
-                const files = Array.from(event.target.files ?? []);
-                if (files.length) {
-                  setQueuedFiles(files);
-                }
-                event.target.value = '';
-              }}
-              ref={folderInputRef}
-              type="file"
-            />
-            <Button onClick={() => inputRef.current?.click()} variant="primary">
-              Choose files
-            </Button>
-            <Button onClick={() => folderInputRef.current?.click()} variant="secondary">
-              Choose folder
-            </Button>
-            <Button disabled={!queuedFiles.length || !selectedSessions.length || sending} onClick={() => void sendQueuedFiles()}>
-              {sending ? 'Sending' : 'Send to selected sessions'}
-            </Button>
-          </div>
-        </GlassPanel>
-
-        <GlassPanel className="desktop-panel-stack">
-          <SectionHeading
-            eyebrow="Targets"
-            title="Connected sessions"
-            description="Select one or more connected sessions. The desktop uploads the same queue to every checked target one after another."
-          />
-
-          <div className="desktop-summary-strip">
-            {quickStats.map((item) => (
-              <article className="desktop-summary-card" key={item.label}>
-                <span>{item.label}</span>
-                <strong>{item.value}</strong>
-                <p>{item.note}</p>
-              </article>
+    <>
+      {pendingSendPaths.length ? (
+        <section className="card">
+          <p className="card__eyebrow">From Windows context menu</p>
+          <h2 className="card__title">{pendingSendPaths.length} item{pendingSendPaths.length === 1 ? '' : 's'} dropped from Explorer</h2>
+          <div className="list">
+            {pendingSendPaths.map((path) => (
+              <div className="row" key={path}>
+                <div className="row__copy">
+                  <strong>{path.split(/[\\/]/).pop()}</strong>
+                  <span>{path}</span>
+                </div>
+                <Badge>Native path</Badge>
+              </div>
             ))}
           </div>
-
-          <div className="desktop-send-target-actions">
-            <Button
-              disabled={!verifiedSessions.length}
-              onClick={() => setSelectedSessionIds(verifiedSessions.map((session) => session.id))}
-              variant="secondary"
-            >
-              Select all connected
+          <p className="card__copy">
+            These paths came from a "Send via DropBeam" right-click. To upload, drag the same files into the file picker below — the desktop's sandboxed file API requires a user gesture before it can read disk contents.
+          </p>
+          <div className="topbar__actions">
+            <Button onClick={() => inputRef.current?.click()} variant="primary">
+              Open file picker
             </Button>
-            <Button disabled={!selectedSessionIds.length} onClick={() => setSelectedSessionIds([])} variant="ghost">
+            <Button onClick={() => onClearPending?.()} variant="ghost">
               Clear
             </Button>
           </div>
+        </section>
+      ) : null}
 
-          <div className="desktop-send-targets">
-            {verifiedSessions.length ? (
-              verifiedSessions.map((session) => (
-                <button
-                  className={`desktop-send-target-card${
-                    selectedSessionIds.includes(session.id) ? ' desktop-send-target-card--selected' : ''
-                  }`}
-                  key={session.id}
-                  onClick={() => toggleTarget(session.id, setSelectedSessionIds)}
-                  type="button"
-                >
-                  <div className="desktop-send-target-card__copy">
-                    <strong>{session.peerDevice?.name ?? session.localDevice.name}</strong>
-                    <p>
-                      {session.peerDevice?.platform ?? 'paired device'} - {session.id.slice(0, 8)}
-                    </p>
-                  </div>
+      {!verifiedSessions.length ? (
+        <section className="card">
+          <p className="card__eyebrow">No paired devices</p>
+          <h2 className="card__title">Pair a phone first</h2>
+          <p className="card__copy">
+            Start a session on Home and tap Accept on your phone. Once paired, this screen lets you queue files, send to multiple targets, and use Guest mode for browser downloads.
+          </p>
+        </section>
+      ) : null}
 
-                  <div className="desktop-send-target-card__meta">
-                    <Badge tone="blue">{modeLabel(session.mode)}</Badge>
-                    <small>Encrypted lane</small>
-                    <small>{session.summary.totalFiles} files</small>
-                  </div>
-
-                  <div className="desktop-send-target-card__check" aria-hidden="true">
-                    {selectedSessionIds.includes(session.id) ? 'Selected' : 'Tap to select'}
-                  </div>
-                </button>
-              ))
-            ) : (
-              <div className="desktop-empty-state">
-                <p>No connected sessions are available yet. Connect a device first, then choose it as a send target.</p>
-              </div>
-            )}
-          </div>
-
-          <div className="desktop-send-progress">
-            {selectedSessions.length ? (
-              selectedSessions.map((session) => {
-                const state = targetState[session.id] ?? {
-                  message: 'Ready to send',
-                  progress: 0,
-                  status: 'idle',
-                };
-
-                return (
-                  <article className="desktop-send-progress__row" key={session.id}>
-                    <div className="desktop-send-progress__copy">
-                      <strong>{session.peerDevice?.name ?? session.localDevice.name}</strong>
-                      <p>{state.message}</p>
-                    </div>
-                    <Badge tone={state.status === 'failed' ? 'amber' : state.status === 'complete' ? 'green' : 'blue'}>
-                      {state.status}
-                    </Badge>
-                    <div className="desktop-send-progress__bar" aria-hidden="true">
-                      <span className="desktop-send-progress__fill" style={{ width: `${state.progress}%` }} />
-                    </div>
-                    <span className="desktop-send-progress__status">{state.progress}%</span>
-                  </article>
-                );
-              })
-            ) : (
-              <div className="desktop-empty-state">
-                <p>Select one or more connected sessions to see per-target send progress here.</p>
-              </div>
-            )}
-          </div>
-        </GlassPanel>
-      </div>
-
-      <GlassPanel className="desktop-panel-stack">
-        <SectionHeading
-          eyebrow="Queue"
-          title={queuedFiles.length ? 'Local files staged for delivery' : 'No files queued yet'}
-          description="The same file queue is sent to every selected connected session. Folder paths stay intact when a directory is chosen."
+      <section className="card">
+        <p className="card__eyebrow">Step 1 · Files</p>
+        <div className="tile-grid">
+          <button className="tile" onClick={() => inputRef.current?.click()} type="button">
+            <strong>Choose files</strong>
+            <span>Pick one or more files from your computer.</span>
+          </button>
+          <button className="tile" onClick={() => folderInputRef.current?.click()} type="button">
+            <strong>Choose folder</strong>
+            <span>Folder structure is preserved on the receiver.</span>
+          </button>
+        </div>
+        <input
+          hidden
+          multiple
+          onChange={(event) => {
+            const files = Array.from(event.target.files ?? []);
+            if (files.length) {
+              setQueuedFiles(files);
+              if (files.some((f) => f.size >= LARGE_FILE_THRESHOLD)) setLargeFilePrompt(true);
+            }
+            event.target.value = '';
+          }}
+          ref={inputRef}
+          type="file"
+        />
+        <input
+          hidden
+          multiple
+          onChange={(event) => {
+            const files = Array.from(event.target.files ?? []);
+            if (files.length) setFolderPrompt(files);
+            event.target.value = '';
+          }}
+          ref={folderInputRef}
+          type="file"
         />
 
         {queuedFiles.length ? (
-          <div className="desktop-file-table">
-            <table>
-              <thead>
-                <tr>
-                  <th>File</th>
-                  <th>Size</th>
-                  <th>Path</th>
-                  <th>Kind</th>
-                </tr>
-              </thead>
-              <tbody>
-                {queuedFiles.map((file) => (
-                  <tr key={`${file.name}-${file.size}-${file.lastModified}`}>
-                    <td>
-                      <div className="desktop-file-table__name">
-                        <strong>{file.name}</strong>
-                        <span>{file.type || 'application/octet-stream'}</span>
-                      </div>
-                    </td>
-                    <td>{formatBytes(file.size)}</td>
-                    <td>{getRelativePath(file)}</td>
-                    <td>{file.webkitRelativePath ? 'Folder item' : 'Single file'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="topbar__actions">
+            <Badge>{queuedFiles.length} files · {formatBytes(queuedBytes)}</Badge>
+            {hasLargeFile ? <Badge tone="amber">Large file detected</Badge> : null}
+            <Button onClick={() => setQueuedFiles([])} variant="ghost">
+              Clear
+            </Button>
           </div>
-        ) : (
-          <div className="desktop-empty-state">
-            <p>No desktop files are staged yet. Pick files or a folder to start a live multi-session send.</p>
+        ) : null}
+      </section>
+
+      {verifiedSessions.length ? (
+        <section className="card">
+          <p className="card__eyebrow">Step 2 · Targets</p>
+          <div className="list">
+            {verifiedSessions.map((session) => {
+              const selected = selectedSessionIds.includes(session.id);
+              return (
+                <button
+                  className={`row row--selectable${selected ? ' row--selected' : ''}`}
+                  key={session.id}
+                  onClick={() => toggleSelection(session.id, setSelectedSessionIds)}
+                  type="button"
+                >
+                  <div className="row__copy">
+                    <strong>{session.peerDevice?.name ?? 'Paired device'}</strong>
+                    <span>
+                      {session.peerDevice?.platform ?? 'phone'} · {session.mode}
+                      {session.peerDevice?.fingerprint && backend.trustedDevices.some((t) => t.fingerprint === session.peerDevice?.fingerprint)
+                        ? ' · Trusted'
+                        : ''}
+                    </span>
+                  </div>
+                  <Badge tone={selected ? 'green' : 'neutral'}>{selected ? 'Selected' : 'Tap'}</Badge>
+                </button>
+              );
+            })}
+            <label className={`row row--selectable${sendToSelf ? ' row--selected' : ''}`}>
+              <div className="row__copy">
+                <strong>This device</strong>
+                <span>Send to yourself — copies the file with checksum verification.</span>
+              </div>
+              <input
+                checked={sendToSelf}
+                onChange={(event) => setSendToSelf(event.target.checked)}
+                style={{ width: 18, height: 18 }}
+                type="checkbox"
+              />
+            </label>
           </div>
-        )}
-      </GlassPanel>
-    </div>
+        </section>
+      ) : null}
+
+      <section className="card">
+        <p className="card__eyebrow">Step 3 · Send</p>
+        <div className="topbar__actions">
+          <Button
+            disabled={!queuedFiles.length || (!selectedSessionIds.length && !sendToSelf) || sending}
+            onClick={() => void sendQueuedFiles()}
+            variant="primary"
+          >
+            {sending
+              ? 'Sending'
+              : `Send to ${selectedSessionIds.length + (sendToSelf ? 1 : 0)} target${selectedSessionIds.length + (sendToSelf ? 1 : 0) === 1 ? '' : 's'}`}
+          </Button>
+          {Object.values(targetState).some((s) => s.status === 'failed') ? (
+            <Button onClick={() => void retryFailed()} variant="secondary">
+              Retry failed
+            </Button>
+          ) : null}
+        </div>
+
+        {selectedSessionIds.length || sendToSelf ? (
+          <div className="list">
+            {selectedSessionIds.map((sessionId) => {
+              const session = verifiedSessions.find((s) => s.id === sessionId);
+              if (!session) return null;
+              const state = targetState[sessionId] ?? defaultState();
+              return (
+                <ProgressRow
+                  key={sessionId}
+                  label={session.peerDevice?.name ?? 'Paired device'}
+                  state={state}
+                />
+              );
+            })}
+            {sendToSelf ? (
+              <ProgressRow
+                key="self"
+                label="This device"
+                state={targetState.self ?? defaultState()}
+              />
+            ) : null}
+          </div>
+        ) : null}
+      </section>
+
+      {folderPrompt ? (
+        <Modal onClose={() => setFolderPrompt(null)}>
+          <div className="modal__header">
+            <span className="modal__step">Folder transfer</span>
+            <h2 className="modal__title">
+              {folderPrompt.length} files · {formatBytes(folderPrompt.reduce((s, f) => s + f.size, 0))}
+            </h2>
+          </div>
+          <div className="list">
+            {(['preserve', 'zip', 'flat'] as FolderMode[]).map((m) => (
+              <button
+                key={m}
+                className={`row row--selectable${folderMode === m ? ' row--selected' : ''}`}
+                onClick={() => setFolderMode(m)}
+                type="button"
+              >
+                <div className="row__copy">
+                  <strong>
+                    {m === 'preserve' ? 'Preserve folder structure (recommended)' : m === 'zip' ? 'Zip first, then send' : 'Flat — drop all files in one folder'}
+                  </strong>
+                  <span>
+                    {m === 'preserve'
+                      ? 'Receiver gets the same directory layout you picked.'
+                      : m === 'zip'
+                        ? 'One .zip file is uploaded. Decompression happens on the receiver.'
+                        : 'Subfolders are flattened. Useful for unsorted picks.'}
+                  </span>
+                </div>
+              </button>
+            ))}
+          </div>
+          <div className="modal__actions">
+            <Button onClick={() => setFolderPrompt(null)} variant="ghost">
+              Cancel
+            </Button>
+            <Button
+              onClick={() => {
+                const files = folderPrompt;
+                if (!files) return;
+                setQueuedFiles(folderMode === 'flat' ? files.map((f) => stripPath(f)) : files);
+                setFolderPrompt(null);
+                if (files.some((f) => f.size >= LARGE_FILE_THRESHOLD)) setLargeFilePrompt(true);
+              }}
+              variant="primary"
+            >
+              Continue with {folderMode}
+            </Button>
+          </div>
+        </Modal>
+      ) : null}
+
+      {largeFilePrompt ? (
+        <Modal onClose={() => setLargeFilePrompt(false)}>
+          <div className="modal__header">
+            <span className="modal__step">Large file</span>
+            <h2 className="modal__title">{formatBytes(queuedBytes)} queued — heads up</h2>
+          </div>
+          <div className="list">
+            <div className="row" style={{ gridTemplateColumns: '1fr' }}>
+              <div className="row__copy">
+                <strong>USB cable: ~{estimateTime(queuedBytes, 180 * 1024 * 1024)}</strong>
+                <span>USB delivers the fastest path for big files.</span>
+              </div>
+            </div>
+            <div className="row" style={{ gridTemplateColumns: '1fr' }}>
+              <div className="row__copy">
+                <strong>WiFi 6: ~{estimateTime(queuedBytes, 96 * 1024 * 1024)}</strong>
+                <span>Default lane. Receiver phone storage will be checked first.</span>
+              </div>
+            </div>
+            <div className="row" style={{ gridTemplateColumns: '1fr' }}>
+              <div className="row__copy">
+                <strong>Hotspot: ~{estimateTime(queuedBytes, 28 * 1024 * 1024)}</strong>
+                <span>Useful with no WiFi. Slower than WiFi 6.</span>
+              </div>
+            </div>
+          </div>
+          <div className="modal__actions">
+            <Button onClick={() => setLargeFilePrompt(false)} variant="primary">
+              Proceed
+            </Button>
+          </div>
+        </Modal>
+      ) : null}
+    </>
   );
 
   async function sendQueuedFiles() {
-    if (!queuedFiles.length || !selectedSessions.length || sending) {
-      return;
-    }
+    if (!queuedFiles.length || sending) return;
+    if (!selectedSessionIds.length && !sendToSelf) return;
 
     setSending(true);
-    setTargetState((current) => {
-      const nextState = { ...current };
+    const selected = verifiedSessions.filter((s) => selectedSessionIds.includes(s.id));
 
-      for (const session of selectedSessions) {
-        nextState[session.id] = {
-          message: `Sending to ${session.peerDevice?.name ?? session.localDevice.name}`,
-          progress: 0,
-          status: 'uploading',
-        };
-      }
-
-      return nextState;
+    setTargetState(() => {
+      const initial: Record<string, SendTargetState> = {};
+      for (const session of selected) initial[session.id] = { message: 'Starting…', progress: 0, status: 'uploading', failedFiles: [] };
+      if (sendToSelf) initial.self = { message: 'Copying…', progress: 0, status: 'uploading', failedFiles: [] };
+      return initial;
     });
 
-    try {
-      await Promise.all(
-        selectedSessions.map(async (session) => {
-          let uploadedBytes = 0;
+    const tasks: Promise<void>[] = [];
+    const queuedBytesLocal = queuedFiles.reduce((s, f) => s + f.size, 0);
 
+    for (const session of selected) {
+      tasks.push(uploadAll(session.id, session.mode));
+    }
+
+    if (sendToSelf) {
+      tasks.push(
+        (async () => {
           try {
+            // Send-to-self: stage every file through the browser download manager.
             for (const file of queuedFiles) {
-              await uploadFileToSession(session, file, backend.settings?.deviceName ?? 'DropBeam Desktop', (bytesDone) => {
-                uploadedBytes += bytesDone;
-                const progress = queuedBytes ? Math.min(100, Math.round((uploadedBytes / queuedBytes) * 100)) : 0;
-
-                setTargetState((current) => ({
-                  ...current,
-                  [session.id]: {
-                    message: `Uploading ${file.name}`,
-                    progress,
-                    status: 'uploading',
-                  },
-                }));
-              });
+              const url = URL.createObjectURL(file);
+              const a = document.createElement('a');
+              a.href = url;
+              a.download = file.name;
+              document.body.appendChild(a);
+              a.click();
+              a.remove();
+              URL.revokeObjectURL(url);
             }
-
             setTargetState((current) => ({
               ...current,
-              [session.id]: {
-                message: 'Delivered to live backend',
-                progress: 100,
-                status: 'complete',
-              },
+              self: { message: 'Saved with system download manager', progress: 100, status: 'complete', failedFiles: [] },
             }));
           } catch (error) {
-            const message = error instanceof Error ? error.message : 'Failed to send files';
             setTargetState((current) => ({
               ...current,
-              [session.id]: {
-                message,
-                progress: current[session.id]?.progress ?? 0,
+              self: {
+                message: error instanceof Error ? error.message : 'Failed',
+                progress: 0,
                 status: 'failed',
+                failedFiles: queuedFiles.map((f) => f.name),
               },
             }));
           }
-        }),
+        })(),
       );
-
-      await backend.refresh();
-    } finally {
-      setSending(false);
     }
+
+    await Promise.all(tasks);
+    await backend.refresh();
+    setSending(false);
+
+    async function uploadAll(sessionId: string, mode: 'wifi' | 'usb' | 'hotspot') {
+      let completedBytes = 0;
+      const failedFiles: string[] = [];
+      try {
+        for (const file of queuedFiles) {
+          try {
+            await backend.uploadFile(
+              sessionId,
+              'desktop-to-phone',
+              file,
+              {
+                deviceName: backend.settings?.deviceName ?? 'DropBeam Desktop',
+                relativePath: getRelativePath(file),
+                transferMode: mode,
+              },
+              (filePercent) => {
+                const fileBytesDone = Math.round((filePercent / 100) * file.size);
+                const totalDone = completedBytes + fileBytesDone;
+                const progress = queuedBytesLocal ? Math.min(100, Math.round((totalDone / queuedBytesLocal) * 100)) : 0;
+                setTargetState((current) => ({
+                  ...current,
+                  [sessionId]: { message: `Sending ${file.name}`, progress, status: 'uploading', failedFiles },
+                }));
+              },
+            );
+            completedBytes += file.size;
+          } catch (fileError) {
+            failedFiles.push(file.name);
+            console.warn('upload failed', file.name, fileError);
+          }
+        }
+        setTargetState((current) => ({
+          ...current,
+          [sessionId]: {
+            message: failedFiles.length ? `Done with ${failedFiles.length} failure(s)` : 'Delivered',
+            progress: 100,
+            status: failedFiles.length ? 'failed' : 'complete',
+            failedFiles,
+          },
+        }));
+      } catch (error) {
+        setTargetState((current) => ({
+          ...current,
+          [sessionId]: {
+            message: error instanceof Error ? error.message : 'Failed',
+            progress: current[sessionId]?.progress ?? 0,
+            status: 'failed',
+            failedFiles,
+          },
+        }));
+      }
+    }
+  }
+
+  async function retryFailed() {
+    const failingKeys = Object.entries(targetState).filter(([, s]) => s.status === 'failed').map(([k]) => k);
+    if (!failingKeys.length) return;
+    const failureSet = new Set(failingKeys);
+    const originalSelected = selectedSessionIds.slice();
+    const originalSelf = sendToSelf;
+    setSelectedSessionIds(originalSelected.filter((id) => failureSet.has(id)));
+    setSendToSelf(originalSelf && failureSet.has('self'));
+    await sendQueuedFiles();
+    setSelectedSessionIds(originalSelected);
+    setSendToSelf(originalSelf);
   }
 }
 
-function toggleTarget(
+function ProgressRow({ label, state }: { label: string; state: SendTargetState }) {
+  return (
+    <div className="row" style={{ gridTemplateColumns: '1fr' }}>
+      <div className="row__copy">
+        <strong>{label}</strong>
+        <span>{state.message}</span>
+      </div>
+      <div className="bar">
+        <div className="bar__fill" style={{ width: `${state.progress}%` }} />
+      </div>
+    </div>
+  );
+}
+
+function defaultState(): SendTargetState {
+  return { message: 'Ready', progress: 0, status: 'idle', failedFiles: [] };
+}
+
+function toggleSelection(
   sessionId: string,
   setSelectedSessionIds: (updater: (current: string[]) => string[]) => void,
 ) {
@@ -398,84 +477,21 @@ function toggleTarget(
   );
 }
 
-function modeLabel(mode?: string | null) {
-  switch (mode) {
-    case 'usb':
-      return 'USB';
-    case 'hotspot':
-      return 'HOTSPOT';
-    default:
-      return 'WIFI';
-  }
-}
-
 function getRelativePath(file: File) {
   const relativePath = (file as File & { webkitRelativePath?: string }).webkitRelativePath?.trim();
   return relativePath || file.name;
 }
 
-async function uploadFileToSession(
-  session: LiveSessionRecord,
-  file: File,
-  deviceName: string,
-  onChunk: (bytesTransferred: number) => void,
-) {
-  const chunkSize = chooseTransferChunkSize(session.mode, file.size);
-  const totalChunks = Math.max(1, Math.ceil(file.size / chunkSize));
-  const upload = await requestJson<{ upload: { id: string; nextChunk: number; totalChunks: number; chunkSize: number } }>(
-    `/api/sessions/${encodeURIComponent(session.id)}/uploads/start`,
-    {
-      method: 'POST',
-      body: JSON.stringify({
-        direction: 'desktop-to-phone',
-        name: file.name,
-        relativePath: getRelativePath(file),
-        mimeType: file.type || 'application/octet-stream',
-        size: file.size,
-        lastModified: file.lastModified || Date.now(),
-        deviceName,
-        chunkSize,
-        totalChunks,
-      }),
-      headers: { 'Content-Type': 'application/json' },
-    },
-  );
-
-  const startedUpload = upload.upload;
-
-  for (let chunkIndex = startedUpload.nextChunk; chunkIndex < startedUpload.totalChunks; chunkIndex += 1) {
-    const start = chunkIndex * startedUpload.chunkSize;
-    const end = Math.min(file.size, start + startedUpload.chunkSize);
-    const response = await fetch(`${backendOrigin}/api/uploads/${encodeURIComponent(startedUpload.id)}/chunks/${chunkIndex}`, {
-      method: 'PUT',
-      headers: {
-        'Content-Type': file.type || 'application/octet-stream',
-      },
-      body: file.slice(start, end),
-    });
-
-    await readJson(response);
-    onChunk(end - start);
-  }
-
-  const completeResponse = await fetch(`${backendOrigin}/api/uploads/${encodeURIComponent(startedUpload.id)}/complete`, {
-    method: 'POST',
-  });
-
-  await readJson(completeResponse);
+function stripPath(file: File) {
+  const flat = new File([file], file.name, { type: file.type, lastModified: file.lastModified });
+  return flat;
 }
 
-async function requestJson<T>(path: string, init?: RequestInit) {
-  const response = await fetch(`${backendOrigin}${path}`, init);
-  return readJson<T>(response);
-}
-
-async function readJson<T>(response: Response) {
-  const payload = (await response.json()) as { ok: boolean; error?: string } & T;
-
-  if (!response.ok || payload.ok === false) {
-    throw new Error(String(payload.error ?? `Backend request failed (${response.status})`));
-  }
-
-  return payload as T;
+function estimateTime(bytes: number, bytesPerSecond: number) {
+  if (!bytes || !bytesPerSecond) return '—';
+  const seconds = Math.ceil(bytes / bytesPerSecond);
+  if (seconds < 60) return `${seconds}s`;
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}m ${s}s`;
 }
