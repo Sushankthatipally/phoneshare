@@ -44,6 +44,7 @@ const DEFAULT_SETTINGS = {
   autoCloseAfterDownload: false,
   autoAcceptTrusted: false,
   onboardingComplete: false,
+  clipboardSyncEnabled: false,
   watchFolders: [],
   createdAt: new Date().toISOString(),
   updatedAt: new Date().toISOString(),
@@ -82,6 +83,7 @@ export class LocalBackendStore {
     this.knownDevices = new Map();
     this.guestShares = new Map();
     this.peerConnectedHandlers = new Set();
+    this.peerStorageReports = new Map();
   }
 
   onPeerConnected(handler) {
@@ -185,6 +187,7 @@ export class LocalBackendStore {
       'autoCloseAfterDownload',
       'autoAcceptTrusted',
       'onboardingComplete',
+      'clipboardSyncEnabled',
       'watchFolders',
     ];
     for (const key of allowed) {
@@ -195,6 +198,10 @@ export class LocalBackendStore {
       }
       if (key === 'watchFolders') {
         this.settings.watchFolders = Array.isArray(patch.watchFolders) ? patch.watchFolders.slice(0, 16) : [];
+        continue;
+      }
+      if (key === 'clipboardSyncEnabled') {
+        this.settings.clipboardSyncEnabled = Boolean(patch.clipboardSyncEnabled);
         continue;
       }
       this.settings[key] = patch[key];
@@ -222,6 +229,35 @@ export class LocalBackendStore {
     await this.persist();
     this.broadcast('clipboard-updated', { clipboard: this.getClipboard() });
     return this.getClipboard();
+  }
+
+  // ─── Peer storage cache (free-space reports from phones) ──
+
+  getPeerStorage(fingerprint) {
+    const report = this.peerStorageReports.get(fingerprint);
+    return report ? structuredClone(report) : null;
+  }
+
+  async recordPeerStorage(patch = {}) {
+    const fingerprint = sanitizeText(patch.fingerprint);
+    if (!fingerprint) throw httpError(400, 'fingerprint is required');
+    const freeBytes = Number(patch.freeBytes);
+    const totalBytes = Number(patch.totalBytes);
+    if (!Number.isFinite(freeBytes) || freeBytes < 0) {
+      throw httpError(400, 'freeBytes must be a non-negative number');
+    }
+    if (!Number.isFinite(totalBytes) || totalBytes < 0) {
+      throw httpError(400, 'totalBytes must be a non-negative number');
+    }
+    const report = {
+      fingerprint,
+      freeBytes: Math.floor(freeBytes),
+      totalBytes: Math.floor(totalBytes),
+      reportedAt: new Date().toISOString(),
+    };
+    this.peerStorageReports.set(fingerprint, report);
+    this.broadcast('peer-storage-updated', { report });
+    return structuredClone(report);
   }
 
   // ─── Sessions ─────────────────────────────────────────────

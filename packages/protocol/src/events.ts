@@ -258,6 +258,7 @@ export interface BackendEventMap {
   'discovery-update': DiscoveryUpdatePayload;
   'watch-folder-fired': WatchFolderFiredPayload;
   'system-notify': SystemNotifyPayload;
+  'peer-storage-updated': { report: import('./live-backend.js').PeerStorageReport };
 }
 
 export type BackendEventName = keyof BackendEventMap;

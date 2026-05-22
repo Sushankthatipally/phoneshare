@@ -300,10 +300,22 @@ export interface BackendSettings {
   autoCloseAfterDownload: boolean;
   autoAcceptTrusted: boolean;
   onboardingComplete: boolean;
+  clipboardSyncEnabled: boolean;
   watchFolders: WatchFolderConfig[];
   createdAt: string;
   updatedAt: string;
 }
+
+export interface PeerStorageReport {
+  fingerprint: string;
+  freeBytes: number;
+  totalBytes: number;
+  reportedAt: string;
+}
+
+export type PeerStorageResponse =
+  | { ok: true; report: PeerStorageReport }
+  | { ok: false; error: 'unknown' };
 
 export interface WatchFolderConfig {
   id: string;
@@ -470,7 +482,14 @@ export interface UpdateSettingsRequest {
   autoCloseAfterDownload?: boolean;
   autoAcceptTrusted?: boolean;
   onboardingComplete?: boolean;
+  clipboardSyncEnabled?: boolean;
   watchFolders?: WatchFolderConfig[];
+}
+
+export interface PeerStorageUpdateRequest {
+  fingerprint: string;
+  freeBytes: number;
+  totalBytes: number;
 }
 
 export interface UpdateClipboardRequest {

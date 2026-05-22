@@ -129,6 +129,20 @@ async function handleRequest(req, res) {
     return sendJson(res, 200, { ok: true, clipboard: await store.updateClipboard(body ?? {}) });
   }
 
+  // ─── Peer storage (mobile reports free disk) ────────────
+  if (req.method === 'POST' && pathname === '/api/peers/storage') {
+    const body = await readJson(req);
+    return sendJson(res, 200, { ok: true, report: await store.recordPeerStorage(body ?? {}) });
+  }
+  if (req.method === 'GET' && pathname.startsWith('/api/peers/') && pathname.endsWith('/storage')) {
+    const fingerprint = decodeURIComponent(pathname.slice('/api/peers/'.length, -'/storage'.length));
+    const report = store.getPeerStorage(fingerprint);
+    if (!report) {
+      return sendJson(res, 200, { ok: false, error: 'unknown' });
+    }
+    return sendJson(res, 200, { ok: true, report });
+  }
+
   // ─── Trusted / known devices ────────────────────────────
   if (req.method === 'GET' && pathname === '/api/trusted-devices') {
     return sendJson(res, 200, { ok: true, items: store.listTrustedDevices() });
