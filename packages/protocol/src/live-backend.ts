@@ -10,6 +10,73 @@ export interface PairingPayload {
   expiresAt: string;
 }
 
+/**
+ * Direct pairing payload encoded in the QR for Wi-Fi / USB connect.
+ * Phone scans, parses, and connects to host:port with its own keypair.
+ */
+export interface DirectPairingPayload {
+  mode: 'wifi' | 'usb';
+  sessionId: string;
+  transport: 'wifi' | 'usb';
+  host: string;
+  port: number;
+  publicKey: string;
+  expiresAt: string;
+}
+
+/**
+ * Hotspot pairing payload. Phone joins the SSID/password first, then
+ * connects to host:port. Same handshake as direct pairing after join.
+ */
+export interface HotspotPairingPayload {
+  mode: 'hotspot';
+  sessionId: string;
+  ssid: string;
+  password: string;
+  host: string;
+  port: number;
+  publicKey: string;
+  expiresAt: string;
+}
+
+/**
+ * POST /api/sessions/:id/pin-verify
+ * The phone derives the SAS PIN locally from the shared secret and sends it
+ * for constant-time comparison server-side.
+ */
+export interface PinVerificationRequest {
+  pin: string;
+  deviceFingerprint: string;
+}
+
+export type PinVerificationFailureReason = 'mismatch' | 'locked' | 'expired' | 'invalid-session';
+
+export type PinVerificationResponse =
+  | { ok: true; sessionId: string; pairedAt: string }
+  | { ok: false; reason: PinVerificationFailureReason; attemptsRemaining?: number };
+
+/**
+ * POST /api/sessions/:id/connect — phone's first contact after scanning the
+ * QR. Posts its own X25519 public key + device identity. Server replies
+ * with a 'pin-required' state (Flow 2.1) or 'paired' for known-device
+ * reconnects (Flow 2.6).
+ */
+export interface ConnectSessionRequest {
+  publicKey: string;
+  deviceName: string;
+  deviceIcon?: DeviceIcon;
+  deviceFingerprint: string;
+  platform?: 'android' | 'ios';
+}
+
+export interface ConnectSessionResponse {
+  ok: boolean;
+  sessionId: string;
+  state: 'pin-required' | 'paired' | 'locked';
+  serverPublicKey: string;
+  expiresAt?: string | null;
+}
+
 export type DeviceIcon = 'desktop' | 'laptop' | 'phone' | 'tablet';
 
 export interface SessionTicket {

@@ -7,7 +7,8 @@
   "types": "./src/index.ts",
   "react-native": "./src/rn.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./rn": "./src/rn.ts"
   },
   "sideEffects": ["./src/rn.ts"],
   "files": [

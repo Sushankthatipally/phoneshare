@@ -11,14 +11,16 @@ export function ScanScreen({ backend }: { backend: ReturnTypeOfUseMobileBackend 
         copy="The session ticket carries the host, port, device identity, and transport mode."
       >
         <View style={styles.ticketBox}>
-          <Text style={styles.ticketLabel}>Session ticket</Text>
+          <Text style={styles.ticketLabel}>Session</Text>
           <Text style={styles.ticketValue}>{backend.sessionLabel}</Text>
-          <Text style={styles.ticketBody}>{backend.sessionTicket}</Text>
+          <Text style={styles.ticketBody}>
+            {backend.sessionTicket ?? 'No session — scan a QR to begin.'}
+          </Text>
         </View>
 
         <View style={styles.actionGrid}>
           <View style={{ width: '48%' }}>
-            <Button onPress={() => void backend.refresh()}>Refresh scan data</Button>
+            <Button onPress={() => backend.refresh()}>Refresh discovery</Button>
           </View>
           <View style={{ width: '48%' }}>
             <Button onPress={() => backend.selectConnectionMode('lan')}>Switch to LAN</Button>
@@ -28,19 +30,25 @@ export function ScanScreen({ backend }: { backend: ReturnTypeOfUseMobileBackend 
 
       <ScreenCard
         eyebrow="Nearby desktops"
-        title="Beacon list"
-        copy="mDNS keeps nearby desktops visible without forcing a browser workflow."
+        title="mDNS browse"
+        copy="Real devices advertising _dropbeam._tcp appear here. No fabricated entries."
       >
         <View style={styles.deviceList}>
-          {backend.beacons.map((beacon) => (
-            <View key={beacon.id} style={styles.deviceCard}>
-              <Text style={styles.deviceName}>{beacon.name}</Text>
-              <Text style={styles.deviceMeta}>
-                {beacon.host}:{beacon.port} · {beacon.mode} · {beacon.signal} signal
-              </Text>
-              <Text style={styles.deviceMeta}>Last seen {beacon.lastSeenLabel}</Text>
-            </View>
-          ))}
+          {backend.beacons.length === 0 ? (
+            <Text style={styles.deviceMeta}>No nearby devices.</Text>
+          ) : (
+            backend.beacons.map((beacon) => (
+              <View key={beacon.id} style={styles.deviceCard}>
+                <Text style={styles.deviceName}>{beacon.name}</Text>
+                <Text style={styles.deviceMeta}>
+                  {beacon.host}:{beacon.port}
+                </Text>
+                {beacon.fingerprint ? (
+                  <Text style={styles.deviceMeta}>fingerprint {beacon.fingerprint.slice(0, 8)}</Text>
+                ) : null}
+              </View>
+            ))
+          )}
         </View>
       </ScreenCard>
     </View>

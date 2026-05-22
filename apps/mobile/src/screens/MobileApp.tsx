@@ -8,12 +8,20 @@ import { HistoryScreen } from './HistoryScreen.js';
 import { HomeScreen } from './HomeScreen.js';
 import { ReceiveScreen } from './ReceiveScreen.js';
 import { ScanScreen } from './ScanScreen.js';
-import { SendScreen } from './SendScreen.js';
+import { SendScreenView } from './SendScreen.js';
 import { PermissionScreen } from './PermissionScreen.js';
 import { OnboardingScreen } from './OnboardingScreen.js';
 import { IncomingScreen } from './IncomingScreen.js';
 import { HotspotJoinScreen } from './HotspotJoinScreen.js';
 import { ShareSheetScreen } from './ShareSheetScreen.js';
+
+/**
+ * Dev harness — lets a developer flip between every screen in one root.
+ * Not mounted by Expo Router. Replaced by `/` and friends at runtime.
+ *
+ * Every value rendered here either comes from a real hook or is left as
+ * an explicit empty state. No fake device names, no fake transfers.
+ */
 
 type Screen =
   | 'permissions'
@@ -27,17 +35,6 @@ type Screen =
   | 'hotspot'
   | 'share-sheet';
 
-const SAMPLE_INCOMING_FILES = [
-  { id: '1', name: 'vacation.jpg', sizeLabel: '2.4 MB' },
-  { id: '2', name: 'video.mp4', sizeLabel: '847 MB' },
-  { id: '3', name: 'report.pdf', sizeLabel: '1.1 MB' },
-];
-
-const SAMPLE_TARGETS = [
-  { id: 'mac', name: 'MacBook Pro', lastUsed: '2 minutes ago' },
-  { id: 'pixel', name: 'Pixel 8 Pro', lastUsed: 'yesterday' },
-];
-
 export function MobileApp({ initialScreen = 'home' }: { initialScreen?: Screen }) {
   const backend = useMobileBackend();
   const [screen, setScreen] = useState<Screen>(initialScreen);
@@ -46,11 +43,11 @@ export function MobileApp({ initialScreen = 'home' }: { initialScreen?: Screen }
     <View style={{ gap: 16 }}>
       <ScreenCard
         eyebrow="DropBeam mobile"
-        title="Native transfer lane"
-        copy="QR discovery, LAN visibility, hotspot scaffolding, accept-on-receive verification — every spec flow has a screen."
+        title="Dev harness"
+        copy="Flip between screens. Discovery, sessions, and history pull from the live context — empty states are real."
       >
         <View style={styles.badgeRow}>
-          <LiveBadge tone={backend.loading ? 'amber' : 'blue'}>{backend.loading ? 'booting' : 'native ready'}</LiveBadge>
+          <LiveBadge tone={backend.loading ? 'amber' : 'blue'}>{backend.loading ? 'connecting' : 'idle'}</LiveBadge>
           <LiveBadge tone="green">{backend.connectionLabel}</LiveBadge>
           <LiveBadge tone="slate">{backend.chunkSizeLabel}</LiveBadge>
         </View>
@@ -86,12 +83,12 @@ export function MobileApp({ initialScreen = 'home' }: { initialScreen?: Screen }
       {screen === 'home' ? <HomeScreen backend={backend} /> : null}
       {screen === 'scan' ? <ScanScreen backend={backend} /> : null}
       {screen === 'receive' ? <ReceiveScreen backend={backend} /> : null}
-      {screen === 'send' ? <SendScreen backend={backend} /> : null}
-      {screen === 'history' ? <HistoryScreen backend={backend} /> : null}
+      {screen === 'send' ? <SendScreenView /> : null}
+      {screen === 'history' ? <HistoryScreen /> : null}
       {screen === 'incoming' ? (
         <IncomingScreen
-          sender="MacBook Pro"
-          files={SAMPLE_INCOMING_FILES}
+          sender="Awaiting peer"
+          files={[]}
           onAcceptAll={() => setScreen('home')}
           onAcceptSome={() => setScreen('home')}
           onDecline={() => setScreen('home')}
@@ -99,17 +96,17 @@ export function MobileApp({ initialScreen = 'home' }: { initialScreen?: Screen }
       ) : null}
       {screen === 'hotspot' ? (
         <HotspotJoinScreen
-          ssid="DropBeam-K7MX2P"
-          password="hq8n3rjwtz5m"
+          ssid="—"
+          password="—"
           isIOS
           onJoined={() => setScreen('home')}
         />
       ) : null}
       {screen === 'share-sheet' ? (
         <ShareSheetScreen
-          fileName="Camera roll export.jpg"
-          fileSize="8.6 MB"
-          targets={SAMPLE_TARGETS}
+          fileName="—"
+          fileSize="—"
+          targets={[]}
           onSend={() => setScreen('home')}
           onCancel={() => setScreen('home')}
         />
