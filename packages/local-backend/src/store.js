@@ -31,6 +31,8 @@ const GUEST_TTL_MS = 60 * 60 * 1000;
 export const MAX_PIN_ATTEMPTS = 3;
 const PAIRING_KEY_TTL_MS = 10 * 60 * 1000;
 const FINGERPRINT_HEAD_BYTES = 256 * 1024;
+const DEFAULT_MULTI_DEVICE_MAX = 3;
+const MULTI_DEVICE_HARD_LIMIT = 8;
 
 const DEFAULT_SETTINGS = {
   deviceName: 'DropBeam Desktop',
@@ -51,6 +53,7 @@ const SESSION_STATES = {
   pairing: 'pairing',
   awaitingAccept: 'awaiting-accept',
   pinRequired: 'pin-required',
+  awaitingKnownDevice: 'awaiting-known-device',
   paired: 'paired',
   transferring: 'transferring',
   completed: 'completed',
@@ -205,24 +208,49 @@ export class LocalBackendStore {
     const sessionId = randomUUID();
     const pairingOrigin = normalizeOrigin(input.origin ?? this.settings.publicOrigin);
     const backendOrigin = rewriteLoopbackToLan(normalizeOrigin(input.backendOrigin ?? getPreferredLanOrigin().origin));
+    const mode = input.mode ?? this.settings.preferredMode;
+    const hotspot = sanitizeHotspotInput(input.hotspot);
+    if (mode === 'hotspot' && !hotspot) {
+      throw httpError(400, 'hotspot.ssid and hotspot.password are required for hotspot sessions');
+    }
     const ticket = await createPairingTicket({
       backendOrigin,
       pairingOrigin,
       sessionId,
-      transport: input.mode ?? this.settings.preferredMode,
+      transport: mode === 'hotspot' ? 'wifi' : mode,
       ttlMs: QR_TTL_MS,
     });
     const expiresAt = new Date(Date.now() + QR_TTL_MS).toISOString();
+    const multiDevice = Boolean(input.multiDevice);
+    const maxDevices = multiDevice
+      ? clampInteger(input.maxDevices, 2, MULTI_DEVICE_HARD_LIMIT, DEFAULT_MULTI_DEVICE_MAX)
+      : 1;
+    const hotspotPayload = mode === 'hotspot'
+      ? {
+          mode: 'hotspot',
+          sessionId,
+          ssid: hotspot.ssid,
+          password: hotspot.password,
+          host: ticket.payload.host,
+          port: ticket.payload.port,
+          publicKey: ticket.payload.publicKey,
+          expiresAt: ticket.payload.expiresAt,
+          band: hotspot.band ?? null,
+        }
+      : null;
+    const pairingUrl = hotspotPayload
+      ? buildHotspotPairingUrl(pairingOrigin, sessionId, hotspotPayload)
+      : ticket.pairingUrl;
     const session = {
       id: sessionId,
-      mode: input.mode ?? this.settings.preferredMode,
+      mode,
       state: SESSION_STATES.pairing,
       createdAt: now,
       updatedAt: now,
       expiresAt,
       closedAt: null,
-      multiDevice: Boolean(input.multiDevice),
-      maxDevices: Number(input.maxDevices) || (input.multiDevice ? 4 : 1),
+      multiDevice,
+      maxDevices,
       localDevice: {
         name: input.deviceName ?? this.settings.deviceName,
         role: 'desktop',
@@ -233,20 +261,25 @@ export class LocalBackendStore {
       pairing: {
         guestAllowed: false,
         encrypted: false,
-        pairingUrl: ticket.pairingUrl,
-        qrPayload: ticket.payload,
+        pairingUrl,
+        qrPayload: hotspotPayload ?? ticket.payload,
+        hotspot: hotspotPayload,
         verifiedAt: null,
         acceptedAt: null,
         attempts: 0,
         attemptsRemaining: MAX_PIN_ATTEMPTS,
       },
       pendingRequest: null,
+      pendingRequests: multiDevice ? [] : null,
       pendingTransfers: [],
       files: { 'desktop-to-phone': [], 'phone-to-desktop': [] },
       queue: this.emptyQueue(),
       summary: this.emptySummary(),
       closedReason: null,
       eventCount: 0,
+      slots: multiDevice ? buildInitialSlots(maxDevices) : null,
+      connectedDevices: multiDevice ? [] : null,
+      awaitingKnownDevice: null,
     };
 
     const nowMs = Date.now();
@@ -260,6 +293,36 @@ export class LocalBackendStore {
     await this.persist();
     this.broadcast('session-created', { session: this.publicSession(session) });
     return this.publicSession(session);
+  }
+
+  // Pre-targeted session for a known device returning. Pairing skips PIN: only ECDH
+  // handshake is performed because trust was already established in a prior session.
+  async reconnectKnownDevice(fingerprint, input = {}) {
+    const known = this.knownDevices.get(fingerprint);
+    if (!known) throw httpError(404, `known device ${fingerprint} not found`);
+    const preferTransport = sanitizePreferredTransport(input.preferTransport);
+    const session = await this.createSession({
+      mode: preferTransport,
+      deviceName: input.deviceName,
+      deviceIcon: input.deviceIcon,
+      origin: input.origin,
+      backendOrigin: input.backendOrigin,
+    });
+    const record = this.requireSession(session.id);
+    record.state = SESSION_STATES.awaitingKnownDevice;
+    record.awaitingKnownDevice = { fingerprint };
+    record.updatedAt = new Date().toISOString();
+    await this.persist();
+    const publicSession = this.publicSession(record);
+    this.broadcast('session-awaiting-known-device', {
+      session: publicSession,
+      knownDevice: known,
+    });
+    return {
+      session: publicSession,
+      ticket: publicSession.pairing.ticket,
+      knownDevice: structuredClone(known),
+    };
   }
 
   async regenerateSession(sessionId) {
@@ -313,31 +376,77 @@ export class LocalBackendStore {
   async requestConnect(sessionId, input = {}) {
     const session = this.requireSession(sessionId);
     this.assertNotExpired(session);
-    if (![SESSION_STATES.pairing, SESSION_STATES.awaitingAccept].includes(session.state)) {
+    const allowedStates = [
+      SESSION_STATES.pairing,
+      SESSION_STATES.awaitingAccept,
+      SESSION_STATES.awaitingKnownDevice,
+    ];
+    if (session.multiDevice) {
+      allowedStates.push(SESSION_STATES.paired, SESSION_STATES.transferring);
+    }
+    if (!allowedStates.includes(session.state)) {
       throw httpError(409, 'session is not awaiting a connection');
     }
 
     const now = new Date().toISOString();
     const peerFingerprint = createDeviceFingerprint(input.deviceName ?? 'Phone', input.platform ?? 'ios');
+
+    if (session.multiDevice) {
+      const connectedCount = countConnectedSlots(session);
+      const openSlot = findOpenSlot(session);
+      if (connectedCount >= session.maxDevices || !openSlot) {
+        const err = httpError(409, 'session-full');
+        err.body = {
+          error: 'session-full',
+          maxDevices: session.maxDevices,
+          connectedDevices: connectedCount,
+        };
+        throw err;
+      }
+      const request = {
+        id: randomUUID(),
+        slotIndex: openSlot.index,
+        requestedAt: now,
+        peer: buildPeerRecord(input, session.mode, peerFingerprint),
+        remotePublicKey: typeof input.remotePublicKey === 'string' ? input.remotePublicKey.trim() : null,
+      };
+      openSlot.status = 'pending';
+      openSlot.device = {
+        name: request.peer.name,
+        platform: request.peer.platform,
+        icon: request.peer.icon,
+        fingerprint: request.peer.fingerprint,
+      };
+      openSlot.pendingRequestId = request.id;
+      session.pendingRequests = session.pendingRequests ?? [];
+      session.pendingRequests.push(request);
+      session.updatedAt = now;
+
+      const trusted = this.trustedDevices.get(peerFingerprint);
+      const skipAccept =
+        session.awaitingKnownDevice?.fingerprint === peerFingerprint ||
+        (this.settings.autoAcceptTrusted && trusted);
+      if (skipAccept) {
+        return this.acceptSession(sessionId, { pendingRequestId: request.id });
+      }
+      await this.persist();
+      this.broadcast('session-connect-requested', { session: this.publicSession(session) });
+      return this.publicSession(session);
+    }
+
+    const skipPin = session.awaitingKnownDevice?.fingerprint === peerFingerprint;
     session.pendingRequest = {
       id: randomUUID(),
       requestedAt: now,
-      peer: {
-        name: input.deviceName ?? 'Phone',
-        platform: input.platform ?? 'ios',
-        transport: input.transport ?? session.mode,
-        icon: sanitizeDeviceIcon(input.deviceIcon) ?? inferDeviceIcon(input.platform),
-        address: input.address ?? null,
-        fingerprint: peerFingerprint,
-      },
+      peer: buildPeerRecord(input, session.mode, peerFingerprint),
       remotePublicKey: typeof input.remotePublicKey === 'string' ? input.remotePublicKey.trim() : null,
+      preTargeted: skipPin,
     };
     session.state = SESSION_STATES.awaitingAccept;
     session.updatedAt = now;
 
-    // Auto-accept if device is trusted and policy enabled
     const trusted = this.trustedDevices.get(peerFingerprint);
-    if (this.settings.autoAcceptTrusted && trusted) {
+    if (skipPin || (this.settings.autoAcceptTrusted && trusted)) {
       return this.acceptSession(sessionId);
     }
 
@@ -353,11 +462,80 @@ export class LocalBackendStore {
   // back until verifyPin succeeds.
   async acceptSession(sessionId, input = {}) {
     const session = this.requireSession(sessionId);
-    if (session.state !== SESSION_STATES.awaitingAccept || !session.pendingRequest) {
+    const now = new Date().toISOString();
+
+    if (session.multiDevice) {
+      const pending = pickPendingRequest(session, input.pendingRequestId);
+      if (!pending) throw httpError(409, 'no pending connection to accept');
+      const slot = (session.slots ?? []).find((s) => s.index === pending.slotIndex);
+      if (!slot) throw httpError(500, 'pending request slot is missing');
+      const peer = pending.peer;
+      const remotePublicKey = pending.remotePublicKey;
+      session.pendingRequests = (session.pendingRequests ?? []).filter((r) => r.id !== pending.id);
+      slot.status = 'connected';
+      slot.connectedAt = now;
+      slot.pendingRequestId = null;
+      slot.device = {
+        name: peer.name,
+        platform: peer.platform,
+        icon: peer.icon,
+        fingerprint: peer.fingerprint,
+      };
+      session.connectedDevices = session.connectedDevices ?? [];
+      session.connectedDevices.push({
+        slotIndex: slot.index,
+        name: peer.name,
+        platform: peer.platform,
+        icon: peer.icon,
+        fingerprint: peer.fingerprint,
+        connectedAt: now,
+      });
+      session.peerDevice = peer;
+      session.pairing.verifiedAt = session.pairing.verifiedAt ?? now;
+      session.pairing.acceptedAt = now;
+      if (remotePublicKey) {
+        const pairingKey = this.pairingKeys.get(sessionId);
+        if (pairingKey?.privateKey) {
+          const sessionSecret = await deriveSessionSecret({
+            privateKey: pairingKey.privateKey,
+            remotePublicKey,
+            sessionId,
+          });
+          this.sessionSecrets.set(sessionId, sessionSecret);
+          session.pairing.encrypted = true;
+        }
+      }
+      session.state = SESSION_STATES.paired;
+      session.updatedAt = now;
+      if (peer.fingerprint) {
+        this.knownDevices.set(peer.fingerprint, {
+          fingerprint: peer.fingerprint,
+          name: peer.name,
+          platform: peer.platform,
+          icon: peer.icon,
+          lastSeenAt: now,
+        });
+        if (input.trust) {
+          this.trustedDevices.set(peer.fingerprint, {
+            fingerprint: peer.fingerprint,
+            name: peer.name,
+            platform: peer.platform,
+            trustedAt: now,
+            autoAccept: true,
+          });
+        }
+      }
+      session.summary = this.buildSummary(session);
+      await this.persist();
+      this.broadcast('session-paired', { session: this.publicSession(session) });
+      return this.publicSession(session);
+    }
+
+    const acceptableStates = [SESSION_STATES.awaitingAccept, SESSION_STATES.awaitingKnownDevice];
+    if (!acceptableStates.includes(session.state) || !session.pendingRequest) {
       throw httpError(409, 'no pending connection to accept');
     }
 
-    const now = new Date().toISOString();
     const peer = session.pendingRequest.peer;
     const remotePublicKey = session.pendingRequest.remotePublicKey;
 
@@ -383,6 +561,7 @@ export class LocalBackendStore {
     session.state = SESSION_STATES.pinRequired;
     session.updatedAt = now;
     session.pendingRequest = null;
+    session.awaitingKnownDevice = null;
     session.pinChallenge = {
       expectedPin,
       sharedSecret: Buffer.from(sharedSecret).toString('base64'),
@@ -392,6 +571,16 @@ export class LocalBackendStore {
       issuedAt: now,
       trustOnSuccess: Boolean(input.trust),
     };
+
+    if (peer.fingerprint) {
+      this.knownDevices.set(peer.fingerprint, {
+        fingerprint: peer.fingerprint,
+        name: peer.name,
+        platform: peer.platform,
+        icon: peer.icon,
+        lastSeenAt: now,
+      });
+    }
 
     session.summary = this.buildSummary(session);
     await this.persist();
@@ -535,10 +724,29 @@ export class LocalBackendStore {
 
   async declineSession(sessionId, input = {}) {
     const session = this.requireSession(sessionId);
+    const now = new Date().toISOString();
+
+    if (session.multiDevice) {
+      const pending = pickPendingRequest(session, input.pendingRequestId);
+      if (!pending) throw httpError(409, 'no pending request to decline');
+      const slot = (session.slots ?? []).find((s) => s.index === pending.slotIndex);
+      session.pendingRequests = (session.pendingRequests ?? []).filter((r) => r.id !== pending.id);
+      if (slot) {
+        slot.status = 'open';
+        slot.pendingRequestId = null;
+        slot.device = null;
+        slot.deniedAt = now;
+        slot.deniedReason = input.reason ?? 'declined';
+      }
+      session.updatedAt = now;
+      await this.persist();
+      this.broadcast('session-declined', { session: this.publicSession(session) });
+      return this.publicSession(session);
+    }
+
     if (session.state !== SESSION_STATES.awaitingAccept) {
       throw httpError(409, 'no pending request to decline');
     }
-    const now = new Date().toISOString();
     session.state = SESSION_STATES.failed;
     session.closedAt = now;
     session.updatedAt = now;
@@ -546,6 +754,57 @@ export class LocalBackendStore {
     session.pendingRequest = null;
     await this.persist();
     this.broadcast('session-declined', { session: this.publicSession(session) });
+    return this.publicSession(session);
+  }
+
+  // Multi-device: a previously-connected device drops off. Free the slot so a new
+  // device can scan and take its place — no stale slots.
+  async disconnectDeviceFromSession(sessionId, fingerprint) {
+    const session = this.requireSession(sessionId);
+    if (!session.multiDevice) {
+      throw httpError(409, 'session is not multi-device');
+    }
+    const slot = (session.slots ?? []).find((s) => s.device?.fingerprint === fingerprint);
+    if (!slot) throw httpError(404, `device ${fingerprint} is not connected to this session`);
+    slot.status = 'open';
+    slot.device = null;
+    slot.connectedAt = null;
+    slot.pendingRequestId = null;
+    session.connectedDevices = (session.connectedDevices ?? []).filter(
+      (d) => d.fingerprint !== fingerprint,
+    );
+    session.updatedAt = new Date().toISOString();
+    await this.persist();
+    this.broadcast('session-updated', { session: this.publicSession(session) });
+    return this.publicSession(session);
+  }
+
+  // PIN verify endpoint stub: pre-targeted (known-device reconnect) sessions skip PIN.
+  // Standard sessions still require PIN — caller supplies pin, store records attempts.
+  async verifyPin(sessionId, pin) {
+    const session = this.requireSession(sessionId);
+    if (session.awaitingKnownDevice || session.pendingRequest?.preTargeted) {
+      throw httpError(409, 'pre-targeted sessions do not require a PIN');
+    }
+    if (typeof pin !== 'string' || !/^\d{4,8}$/.test(pin)) {
+      throw httpError(400, 'pin must be a 4-8 digit numeric string');
+    }
+    session.pairing.attempts = (session.pairing.attempts ?? 0) + 1;
+    if (session.pairing.attempts > MAX_PIN_ATTEMPTS) {
+      throw httpError(429, 'maximum PIN attempts exceeded');
+    }
+    const expected = session.pairing.pin;
+    if (!expected) {
+      throw httpError(409, 'session has no PIN configured');
+    }
+    if (pin !== expected) {
+      await this.persist();
+      throw httpError(401, 'incorrect PIN');
+    }
+    session.pairing.verifiedAt = new Date().toISOString();
+    session.pairing.attempts = 0;
+    await this.persist();
+    this.broadcast('session-updated', { session: this.publicSession(session) });
     return this.publicSession(session);
   }
 
@@ -1131,6 +1390,7 @@ export class LocalBackendStore {
           qrValue: session.pairing.pairingUrl,
           pairingUrl: session.pairing.pairingUrl,
           expiresAt: session.expiresAt,
+          hotspot: session.pairing.hotspot ?? null,
         },
         encrypted: Boolean(session.pairing.encrypted),
         verifiedAt: session.pairing.verifiedAt ?? null,
@@ -1141,10 +1401,14 @@ export class LocalBackendStore {
         pin: session.state === SESSION_STATES.pinRequired && challenge ? challenge.expectedPin : null,
       },
       pendingRequest: session.pendingRequest ?? null,
+      pendingRequests: session.multiDevice ? session.pendingRequests ?? [] : undefined,
       pendingTransfers: session.pendingTransfers ?? [],
       summary: this.buildSummary(session),
       queue: this.buildQueue(session),
       pinChallenge: undefined,
+      slots: session.multiDevice ? session.slots ?? [] : undefined,
+      connectedDevices: session.multiDevice ? session.connectedDevices ?? [] : undefined,
+      awaitingKnownDevice: session.awaitingKnownDevice ?? null,
       files: {
         'desktop-to-phone': session.files['desktop-to-phone'].map((f) => this.publicFile(f)),
         'phone-to-desktop': session.files['phone-to-desktop'].map((f) => this.publicFile(f)),
@@ -1586,4 +1850,74 @@ function httpError(status, message) {
   const error = new Error(message);
   error.status = status;
   return error;
+}
+
+function clampInteger(value, min, max, fallback) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  const i = Math.floor(n);
+  if (i < min) return min;
+  if (i > max) return max;
+  return i;
+}
+
+function sanitizeHotspotInput(value) {
+  if (!value || typeof value !== 'object') return null;
+  const ssid = sanitizeText(value.ssid);
+  const password = sanitizeText(value.password);
+  if (!ssid || !password) return null;
+  const band = value.band === '2.4GHz' || value.band === '5GHz' ? value.band : null;
+  return { ssid, password, band };
+}
+
+function sanitizePreferredTransport(value) {
+  return value === 'wifi' || value === 'usb' || value === 'hotspot' ? value : 'wifi';
+}
+
+function buildInitialSlots(count) {
+  const slots = [];
+  for (let i = 0; i < count; i += 1) {
+    slots.push({
+      index: i,
+      status: 'open',
+      device: null,
+      pendingRequestId: null,
+      connectedAt: null,
+      deniedAt: null,
+      deniedReason: null,
+    });
+  }
+  return slots;
+}
+
+function findOpenSlot(session) {
+  return (session.slots ?? []).find((s) => s.status === 'open') ?? null;
+}
+
+function countConnectedSlots(session) {
+  return (session.slots ?? []).filter((s) => s.status === 'connected').length;
+}
+
+function buildPeerRecord(input, defaultMode, fingerprint) {
+  return {
+    name: input.deviceName ?? 'Phone',
+    platform: input.platform ?? 'ios',
+    transport: input.transport ?? defaultMode,
+    icon: sanitizeDeviceIcon(input.deviceIcon) ?? inferDeviceIcon(input.platform),
+    address: input.address ?? null,
+    fingerprint,
+  };
+}
+
+function pickPendingRequest(session, requestId) {
+  const pending = session.pendingRequests ?? [];
+  if (!pending.length) return null;
+  if (!requestId) return pending[0];
+  return pending.find((r) => r.id === requestId) ?? null;
+}
+
+function buildHotspotPairingUrl(pairingOrigin, sessionId, hotspotPayload) {
+  const url = new URL(`${pairingOrigin}/pair/${encodeURIComponent(sessionId)}`);
+  url.hash = `pair=${encodeURIComponent(JSON.stringify(hotspotPayload))}`;
+  return url.toString();
 }

@@ -48,7 +48,10 @@ void (async function bootBackend() {
         return;
       }
       const status = Number(error?.status ?? 500);
-      sendJson(res, status, { ok: false, error: error?.message ?? 'Internal server error' });
+      const body = error?.body
+        ? { ok: false, ...error.body }
+        : { ok: false, error: error?.message ?? 'Internal server error' };
+      sendJson(res, status, body);
     }
   });
 
@@ -125,6 +128,20 @@ async function handleRequest(req, res) {
   if (req.method === 'GET' && pathname === '/api/known-devices') {
     return sendJson(res, 200, { ok: true, items: store.listKnownDevices() });
   }
+  if (pathname.startsWith('/api/known-devices/') && req.method === 'POST') {
+    const reconnectMatch = pathname.match(/^\/api\/known-devices\/([^/]+)\/reconnect$/);
+    if (reconnectMatch) {
+      const fp = decodeURIComponent(reconnectMatch[1]);
+      const body = await readJson(req);
+      const advertiseHost = discovery.status().advertiseHost;
+      const result = await store.reconnectKnownDevice(fp, {
+        ...(body ?? {}),
+        origin: rewriteOriginHost(body?.origin ?? origin, advertiseHost),
+        backendOrigin: rewriteOriginHost(body?.backendOrigin ?? origin, advertiseHost),
+      });
+      return sendJson(res, 201, { ok: true, ...result });
+    }
+  }
   if (pathname.startsWith('/api/trusted-devices/')) {
     const fp = decodeURIComponent(pathname.slice('/api/trusted-devices/'.length));
     if (req.method === 'POST' || req.method === 'PUT') {
@@ -195,6 +212,21 @@ async function handleRequest(req, res) {
     if (tail === 'close' && req.method === 'POST') {
       const body = await readJson(req);
       return sendJson(res, 200, { ok: true, session: await store.closeSession(sessionId, body ?? {}) });
+    }
+    if (tail === 'pin-verify' && req.method === 'POST') {
+      const body = await readJson(req);
+      return sendJson(res, 200, {
+        ok: true,
+        session: await store.verifyPin(sessionId, String(body?.pin ?? '')),
+      });
+    }
+    const disconnectMatch = tail.match(/^devices\/([^/]+)\/disconnect$/);
+    if (disconnectMatch && req.method === 'POST') {
+      const fp = decodeURIComponent(disconnectMatch[1]);
+      return sendJson(res, 200, {
+        ok: true,
+        session: await store.disconnectDeviceFromSession(sessionId, fp),
+      });
     }
     if (tail === 'transfers' && req.method === 'POST') {
       const body = await readJson(req);
