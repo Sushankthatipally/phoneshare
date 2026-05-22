@@ -11,6 +11,7 @@ import { randomBytes } from 'node:crypto';
 import { resolveBackendConfig } from './config.js';
 import { BackendDiscoveryService } from './discovery.js';
 import { LocalBackendStore } from './store.js';
+import { renderGuestPageHtml, renderGuestExpiredHtml } from './guest-page.js';
 
 const { dataDir, host, port } = resolveBackendConfig();
 
@@ -303,49 +304,19 @@ function buildHealth() {
 function renderGuestPage(res, token) {
   const share = store.getGuestShare(token);
   if (!share) {
-    res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
-    return res.end('<!doctype html><meta charset="utf-8"><title>DropBeam — Link Expired</title><style>body{font-family:system-ui;background:#000;color:#fff;display:grid;place-items:center;min-height:100vh;margin:0;padding:24px}main{max-width:480px;text-align:center}h1{margin:0 0 12px;font-size:1.4rem}p{color:#aaa}</style><main><h1>Link expired</h1><p>This DropBeam share is no longer available.</p></main>');
+    res.writeHead(404, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store',
+    });
+    return res.end(renderGuestExpiredHtml());
   }
-
-  const filesHtml = share.files.map((file) => `
-    <li>
-      <strong>${escapeHtml(file.name)}</strong>
-      <span>${formatBytesServer(file.size)} · ${escapeHtml(file.mimeType)}</span>
-      <a href="/api/guest/${encodeURIComponent(token)}/files/download?fileId=${encodeURIComponent(file.id)}">Download</a>
-    </li>
-  `).join('');
-
-  const html = `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8" />
-<title>DropBeam — Guest Share</title>
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<style>
-  body { font-family: system-ui, -apple-system, sans-serif; background:#000; color:#fff; margin:0; padding:24px; min-height:100vh; }
-  main { max-width:640px; margin:0 auto; }
-  h1 { font-size:1.4rem; margin:0 0 8px; letter-spacing:-0.02em; }
-  p.lead { color:#aaa; margin:0 0 24px; }
-  ul { list-style:none; padding:0; margin:0; display:grid; gap:12px; }
-  li { display:grid; grid-template-columns: 1fr auto; align-items:center; gap:12px 16px; padding:14px; border:1px solid rgba(255,255,255,0.12); border-radius:8px; background:rgba(255,255,255,0.02); }
-  li strong { font-size:1rem; }
-  li span { grid-column:1; color:#888; font-size:0.85rem; }
-  li a { grid-row: 1 / span 2; background:#fff; color:#000; padding:10px 16px; border-radius:6px; text-decoration:none; font-weight:600; font-size:0.85rem; letter-spacing:0.08em; text-transform:uppercase; }
-  footer { color:#666; font-size:0.8rem; margin-top:32px; text-align:center; }
-</style>
-</head>
-<body>
-<main>
-  <h1>DropBeam — Shared with you</h1>
-  <p class="lead">No app needed. ${share.files.length} file${share.files.length === 1 ? '' : 's'} · expires ${new Date(share.expiresAt).toLocaleString()}</p>
-  <ul>${filesHtml}</ul>
-  <footer>Powered by DropBeam</footer>
-</main>
-</body>
-</html>`;
-
-  res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-  res.end(html);
+  res.writeHead(200, {
+    'Content-Type': 'text/html; charset=utf-8',
+    'Cache-Control': 'no-store',
+    'X-Content-Type-Options': 'nosniff',
+    'Referrer-Policy': 'no-referrer',
+  });
+  res.end(renderGuestPageHtml({ ...share, token }));
 }
 
 async function serveGuestFile(res, token, fileId) {
@@ -473,23 +444,6 @@ async function readJson(req) {
 
 function escapeHeaderValue(value) {
   return String(value).replace(/"/g, '\\"');
-}
-
-function escapeHtml(value) {
-  return String(value)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
-function formatBytesServer(bytes) {
-  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  let v = bytes;
-  let i = 0;
-  while (v >= 1024 && i < units.length - 1) { v /= 1024; i += 1; }
-  return `${v.toFixed(v >= 100 || i === 0 ? 0 : 1)} ${units[i]}`;
 }
 
 function randomUUID() {

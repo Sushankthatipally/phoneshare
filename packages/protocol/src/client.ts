@@ -201,7 +201,7 @@ export class DropbeamBackendClient {
     });
   }
 
-  createGuestShare(input: { ttlMs?: number; maxUses?: number }) {
+  createGuestShare(input: { ttlMs?: number; maxUses?: number; sharerName?: string | null }) {
     return this.request<{
       share: GuestShareSummary & { token: string };
       lanUrl?: string | null;

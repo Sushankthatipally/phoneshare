@@ -230,6 +230,8 @@ export interface GuestShareSummary {
   maxUses: number;
   uses: number;
   files: number;
+  /** Optional human-readable label for the sharing device, shown to guests. */
+  sharerName?: string | null;
 }
 
 export interface PendingTransferBatch {
