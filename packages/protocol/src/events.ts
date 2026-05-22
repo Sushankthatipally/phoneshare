@@ -259,6 +259,7 @@ export interface BackendEventMap {
   'watch-folder-fired': WatchFolderFiredPayload;
   'system-notify': SystemNotifyPayload;
   'peer-storage-updated': { report: import('./live-backend.js').PeerStorageReport };
+  snapshot: { reason?: string };
 }
 
 export type BackendEventName = keyof BackendEventMap;
@@ -266,3 +267,5 @@ export type BackendEventName = keyof BackendEventMap;
 export type BackendEvent = {
   [K in BackendEventName]: { type: K; payload: BackendEventMap[K] };
 }[BackendEventName];
+
+export type BackendEventPayload<T extends BackendEventName> = BackendEventMap[T];

@@ -5,7 +5,7 @@ import { Download, History as HistoryIcon, House, Link2, SendHorizontal, Setting
 import { Button } from '@dropbeam/shared-ui';
 
 import { useDesktopBackend } from './features/dashboard/useDesktopBackend.js';
-import { ConnectionPicker, type ConnectionChoice } from './components/ConnectionPicker.js';
+import { ConnectionPicker, type ConnectionChoice, type ReconnectIntent } from './components/ConnectionPicker.js';
 import { ConnectionScreen } from './components/ConnectionScreen.js';
 import { IncomingBanner } from './components/IncomingBanner.js';
 import { Onboarding } from './components/Onboarding.js';
@@ -70,6 +70,7 @@ export default function App() {
   const [screen, setScreen] = useState<Screen>('home');
   const [pickerOpen, setPickerOpen] = useState(false);
   const [connection, setConnection] = useState<ConnectionChoice | null>(null);
+  const [reconnectIntent, setReconnectIntent] = useState<ReconnectIntent | null>(null);
   const [pendingSendPaths, setPendingSendPaths] = useState<string[]>([]);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [dragActive, setDragActive] = useState(false);
@@ -354,11 +355,25 @@ export default function App() {
             setPickerOpen(false);
             setConnection(choice);
           }}
+          onReconnect={(intent) => {
+            setPickerOpen(false);
+            setReconnectIntent(intent);
+            setConnection('wifi');
+          }}
         />
       ) : null}
 
       {connection ? (
-        <ConnectionScreen backend={backend} choice={connection} onClose={() => setConnection(null)} />
+        <ConnectionScreen
+          backend={backend}
+          choice={connection}
+          existingSessionId={reconnectIntent?.sessionId ?? null}
+          reconnectLabel={reconnectIntent?.deviceName ?? null}
+          onClose={() => {
+            setConnection(null);
+            setReconnectIntent(null);
+          }}
+        />
       ) : null}
 
       {dragActive ? (

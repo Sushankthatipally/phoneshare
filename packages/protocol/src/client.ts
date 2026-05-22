@@ -15,6 +15,7 @@ import type {
   PendingTransferBatch,
   PeerStorageResponse,
   PeerStorageUpdateRequest,
+  ReconnectToKnownDeviceRequest,
   SecureDownloadPayload,
   StoredFileRecord,
   TrustedDeviceRecord,
@@ -216,6 +217,17 @@ export class DropbeamBackendClient {
 
   knownDevices() {
     return this.request<{ items: KnownDeviceRecord[] }>('/api/known-devices').then((r) => r.items);
+  }
+
+  reconnectKnownDevice(fingerprint: string, input: ReconnectToKnownDeviceRequest = {}) {
+    return this.request<{ session: LiveSessionRecord }>(
+      `/api/known-devices/${encodeURIComponent(fingerprint)}/reconnect`,
+      {
+        method: 'POST',
+        body: JSON.stringify(input),
+        headers: { 'Content-Type': 'application/json' },
+      },
+    ).then((response) => response.session);
   }
 
   setTrustedDevice(fingerprint: string, autoAccept = true) {
