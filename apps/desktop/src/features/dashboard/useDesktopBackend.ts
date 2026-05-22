@@ -12,6 +12,8 @@ import {
   type HistoryEntry,
   type KnownDeviceRecord,
   type LiveSessionRecord,
+  type ReconnectToKnownDeviceRequest,
+  type TransferMode,
   type TrustedDeviceRecord,
   type UploadSessionRecord,
   type UpdateSettingsRequest,
@@ -101,6 +103,31 @@ export function useDesktopBackend() {
   const settings = dashboard?.settings ?? health?.settings ?? null;
   const clipboard: ClipboardState | null = dashboard?.clipboard ?? null;
   const activeUploads: UploadSessionRecord[] = dashboard?.activeUploads ?? [];
+
+  const reconnectKnownDevice = useCallback(
+    async (fingerprint: string, input: { preferTransport?: TransferMode } = {}) => {
+      setBusy('reconnect-known-device');
+      setError(null);
+      try {
+        const lanHost = devices.find((d) => d.local)?.host ?? null;
+        const session = await client.reconnectKnownDevice(fingerprint, {
+          ...input,
+          deviceName: settings?.deviceName,
+          origin: resolvePhoneOrigin(lanHost),
+          backendOrigin: replaceOriginHostname(resolveBackendOrigin(import.meta.env.VITE_DROPBEAM_API), lanHost),
+        } satisfies ReconnectToKnownDeviceRequest);
+        setSelectedSessionId(session.id);
+        await refresh();
+        return session;
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Failed to reconnect');
+        return null;
+      } finally {
+        setBusy(null);
+      }
+    },
+    [devices, refresh, settings?.deviceName],
+  );
 
   const createSession = useCallback(
     async (input: { mode?: 'wifi' | 'usb' | 'hotspot'; multiDevice?: boolean; maxDevices?: number } = {}) => {
@@ -285,6 +312,7 @@ export function useDesktopBackend() {
     guestUrl: client.guestUrl.bind(client),
     benchmarkSend: client.benchmarkSend.bind(client),
     benchmarkReceive: client.benchmarkReceive.bind(client),
+    reconnectKnownDevice,
     refresh,
     regenerateSession,
     removeTrusted,

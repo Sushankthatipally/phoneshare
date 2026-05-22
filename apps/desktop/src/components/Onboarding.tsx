@@ -1,15 +1,34 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import { Button } from '@dropbeam/shared-ui';
 
 import { Modal } from './Modal.js';
+import { getSystemHostname, openFolderDialog } from '../lib/tauri.js';
 import type { DesktopBackendState } from '../features/dashboard/useDesktopBackend.js';
 
 export function Onboarding({ backend }: { backend: DesktopBackendState }) {
   const [step, setStep] = useState(1);
-  const [deviceName, setDeviceName] = useState(backend.settings?.deviceName ?? 'My Desktop');
-  const [downloadFolder, setDownloadFolder] = useState(backend.settings?.downloadFolder ?? '~/Downloads/DropBeam/');
+  const [deviceName, setDeviceName] = useState(backend.settings?.deviceName ?? '');
+  const [downloadFolder, setDownloadFolder] = useState(backend.settings?.downloadFolder ?? '');
   const [mode, setMode] = useState<'auto' | 'wifi' | 'usb'>(backend.settings?.connectionMode ?? 'auto');
+  const [hostnameLoaded, setHostnameLoaded] = useState(false);
+
+  useEffect(() => {
+    if (hostnameLoaded) return;
+    let cancelled = false;
+    (async () => {
+      if (!deviceName) {
+        const hostname = await getSystemHostname();
+        if (!cancelled && hostname) setDeviceName(hostname);
+      }
+      if (!cancelled) setHostnameLoaded(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [deviceName, hostnameLoaded]);
+
+  const canContinue = step === 1 ? deviceName.trim().length > 0 : step === 2 ? downloadFolder.trim().length > 0 : true;
 
   return (
     <Modal>
@@ -23,16 +42,38 @@ export function Onboarding({ backend }: { backend: DesktopBackendState }) {
       {step === 1 ? (
         <div className="field">
           <span className="field__label">Device name</span>
-          <input className="input" autoFocus onChange={(e) => setDeviceName(e.target.value)} value={deviceName} />
+          <input
+            className="input"
+            autoFocus
+            onChange={(e) => setDeviceName(e.target.value)}
+            value={deviceName}
+            placeholder={hostnameLoaded ? '' : 'Loading…'}
+          />
         </div>
       ) : null}
 
       {step === 2 ? (
         <div className="field">
           <span className="field__label">Download folder</span>
-          <input className="input" onChange={(e) => setDownloadFolder(e.target.value)} value={downloadFolder} />
+          <div className="topbar__actions" style={{ gap: 8 }}>
+            <input
+              className="input"
+              onChange={(e) => setDownloadFolder(e.target.value)}
+              value={downloadFolder}
+              style={{ flex: 1 }}
+            />
+            <Button
+              variant="secondary"
+              onClick={async () => {
+                const picked = await openFolderDialog({ defaultPath: downloadFolder, title: 'Choose download folder' });
+                if (picked) setDownloadFolder(picked);
+              }}
+            >
+              Browse
+            </Button>
+          </div>
           <p className="card__copy" style={{ fontSize: '0.85rem' }}>
-            Files your phone sends will land here. Path is recorded as a preference — actual saves still go through your browser's download prompt.
+            Files your phone sends will land here.
           </p>
         </div>
       ) : null}
@@ -68,21 +109,22 @@ export function Onboarding({ backend }: { backend: DesktopBackendState }) {
           </Button>
         ) : null}
         <Button
+          disabled={!canContinue}
           onClick={async () => {
             if (step < 3) {
               setStep(step + 1);
               return;
             }
             await backend.updateSettings({
-              deviceName,
-              downloadFolder,
+              deviceName: deviceName.trim(),
+              downloadFolder: downloadFolder.trim(),
               connectionMode: mode,
               onboardingComplete: true,
             });
           }}
           variant="primary"
         >
-          {step < 3 ? 'Continue →' : 'Done — Open App'}
+          {step < 3 ? 'Continue' : 'Done'}
         </Button>
       </div>
     </Modal>

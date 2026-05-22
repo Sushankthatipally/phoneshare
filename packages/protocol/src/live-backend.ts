@@ -107,6 +107,42 @@ export interface LiveSessionSummary {
   closedAt?: string | null;
 }
 
+export type MultiDeviceSlotStatus = 'open' | 'pending' | 'connected' | 'denied';
+
+export interface MultiDeviceSlot {
+  index: number;
+  status: MultiDeviceSlotStatus;
+  deviceName?: string | null;
+  devicePlatform?: string | null;
+  deviceIcon?: DeviceIcon | null;
+  fingerprint?: string | null;
+  joinedAt?: string | null;
+  deniedReason?: string | null;
+}
+
+export interface ConnectedDeviceRecord {
+  name: string;
+  platform: string;
+  transport: TransferMode;
+  address?: string | null;
+  icon?: DeviceIcon | null;
+  fingerprint?: string | null;
+  connectedAt: string;
+}
+
+export interface PendingConnectRequest {
+  id: string;
+  requestedAt: string;
+  peer: {
+    name: string;
+    platform: string;
+    transport: TransferMode;
+    icon?: DeviceIcon | null;
+    address?: string | null;
+    fingerprint?: string | null;
+  };
+}
+
 export interface LiveSessionRecord {
   id: string;
   mode: TransferMode;
@@ -117,6 +153,11 @@ export interface LiveSessionRecord {
   expiresAt?: string | null;
   multiDevice?: boolean;
   maxDevices?: number;
+  slots?: MultiDeviceSlot[];
+  connectedDevices?: ConnectedDeviceRecord[];
+  lockedAt?: string | null;
+  lockedReason?: string | null;
+  awaitingKnownDeviceFingerprint?: string | null;
   localDevice: {
     name: string;
     role: 'desktop';
@@ -133,23 +174,16 @@ export interface LiveSessionRecord {
   } | null;
   pairing: {
     ticket: SessionTicket;
+    pin?: string | null;
+    pinAttempts?: number;
+    pinAttemptsRemaining?: number;
     guestAllowed?: boolean;
     encrypted?: boolean;
     verifiedAt?: string | null;
     acceptedAt?: string | null;
   };
-  pendingRequest?: {
-    id: string;
-    requestedAt: string;
-    peer: {
-      name: string;
-      platform: string;
-      transport: TransferMode;
-      icon?: DeviceIcon | null;
-      address?: string | null;
-      fingerprint?: string | null;
-    };
-  } | null;
+  pendingRequest?: PendingConnectRequest | null;
+  pendingRequests?: PendingConnectRequest[];
   pendingTransfers?: PendingTransferBatch[];
   files: Record<LiveTransferDirection, StoredFileRecord[]>;
   queue: LiveQueueState;
@@ -313,6 +347,17 @@ export interface CreateSessionRequest {
   backendOrigin?: string;
   multiDevice?: boolean;
   maxDevices?: number;
+}
+
+export interface ReconnectToKnownDeviceRequest {
+  preferTransport?: TransferMode;
+  deviceName?: string;
+  origin?: string;
+  backendOrigin?: string;
+}
+
+export interface ReconnectToKnownDeviceResponse {
+  session: LiveSessionRecord;
 }
 
 export interface PairSessionRequest {

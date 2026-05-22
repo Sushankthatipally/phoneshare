@@ -46,6 +46,11 @@ fn clear_pending_send_paths(state: State<'_, PendingSend>) {
     }
 }
 
+#[tauri::command]
+fn get_system_hostname() -> String {
+    gethostname::gethostname().to_string_lossy().into_owned()
+}
+
 fn main() {
     install_tracing();
 
@@ -68,6 +73,7 @@ fn main() {
             notify_shell::unregister_context_menu,
             get_pending_send_paths,
             clear_pending_send_paths,
+            get_system_hostname,
         ])
         .setup(move |app| {
             spawn_backend_sidecar(app)?;

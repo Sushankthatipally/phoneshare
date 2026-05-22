@@ -110,3 +110,29 @@ export type TransferEvent =
   | ChunkEvent
   | TransferCompleteEvent
   | TransferFailedEvent;
+
+export interface BackendEventMap {
+  snapshot: { reason?: string };
+  'session-created': { sessionId: string };
+  'session-paired': {
+    sessionId: string;
+    peerFingerprint?: string | null;
+    peerName?: string | null;
+    slotIndex?: number | null;
+  };
+  'session-locked': {
+    sessionId: string;
+    reason: 'pin-attempts-exceeded' | 'expired' | 'manual';
+  };
+  'session-closed': { sessionId: string; reason?: string | null };
+  'settings-updated': Record<string, unknown>;
+  'clipboard-updated': { sourceRole?: 'desktop' | 'phone' };
+  'upload-started': { sessionId: string; uploadId: string };
+  'upload-progress': { sessionId: string; uploadId: string; percent: number };
+  'file-uploaded': { sessionId: string; fileId: string };
+  'file-downloaded': { sessionId: string; fileId: string };
+}
+
+export type BackendEventName = keyof BackendEventMap;
+
+export type BackendEventPayload<T extends BackendEventName> = BackendEventMap[T];
