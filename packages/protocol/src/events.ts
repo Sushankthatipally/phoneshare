@@ -12,6 +12,21 @@ import type {
   UploadSessionRecord,
 } from './live-backend.js';
 
+export type SystemNotifyKind =
+  | 'incoming'
+  | 'paired'
+  | 'pin'
+  | 'error'
+  | 'transfer-complete';
+
+export interface SystemNotifyPayload {
+  title: string;
+  body: string;
+  sessionId?: string | null;
+  kind: SystemNotifyKind;
+  emittedAt: string;
+}
+
 export const TRANSFER_EVENT_TYPES = [
   'session-created',
   'session-updated',
@@ -199,13 +214,19 @@ export interface ClipboardUpdatedPayload {
 
 export interface WatchFolderFiredPayload {
   watchFolderId: string;
-  path: string;
+  watchFolderPath: string;
   destinationFingerprint: string;
-  files: Array<{
-    path: string;
+  destinationLabel: string;
+  sessionId: string | null;
+  uploadId: string;
+  file: {
+    name: string;
+    relativePath: string | null;
     size: number;
     mimeType: string;
-  }>;
+    lastModified: number | null;
+    sha256Prefix: string;
+  };
   firedAt: string;
 }
 
@@ -236,6 +257,7 @@ export interface BackendEventMap {
   'peer-disconnected': PeerDisconnectedPayload;
   'discovery-update': DiscoveryUpdatePayload;
   'watch-folder-fired': WatchFolderFiredPayload;
+  'system-notify': SystemNotifyPayload;
 }
 
 export type BackendEventName = keyof BackendEventMap;

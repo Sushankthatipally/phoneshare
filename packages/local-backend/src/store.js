@@ -81,6 +81,29 @@ export class LocalBackendStore {
     this.trustedDevices = new Map();
     this.knownDevices = new Map();
     this.guestShares = new Map();
+    this.peerConnectedHandlers = new Set();
+  }
+
+  onPeerConnected(handler) {
+    if (typeof handler !== 'function') return () => {};
+    this.peerConnectedHandlers.add(handler);
+    return () => this.peerConnectedHandlers.delete(handler);
+  }
+
+  notifyPeerConnected(fingerprint) {
+    if (!fingerprint) return;
+    for (const handler of this.peerConnectedHandlers) {
+      try {
+        const result = handler(fingerprint);
+        if (result && typeof result.catch === 'function') {
+          result.catch((error) => {
+            console.warn(`peer-connected handler failed: ${error?.message ?? error}`);
+          });
+        }
+      } catch (error) {
+        console.warn(`peer-connected handler failed: ${error?.message ?? error}`);
+      }
+    }
   }
 
   async init() {
@@ -528,6 +551,9 @@ export class LocalBackendStore {
       session.summary = this.buildSummary(session);
       await this.persist();
       this.broadcast('session-paired', { session: this.publicSession(session) });
+      if (peer.fingerprint) {
+        this.notifyPeerConnected(peer.fingerprint);
+      }
       return this.publicSession(session);
     }
 
@@ -660,6 +686,9 @@ export class LocalBackendStore {
       session.summary = this.buildSummary(session);
       await this.persist();
       this.broadcast('session-paired', { session: this.publicSession(session) });
+      if (peer?.fingerprint) {
+        this.notifyPeerConnected(peer.fingerprint);
+      }
       return {
         ok: true,
         session: this.publicSession(session),
