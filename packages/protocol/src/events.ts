@@ -1,5 +1,12 @@
 import type { FileDescriptor, FileManifest, PacketHeader } from './packets.js';
 import type { PairingState, SessionState, TransferMode } from './session.js';
+import type {
+  ClipboardState,
+  DiscoveryDeviceRecord,
+  LiveSessionRecord,
+  LiveTransferDirection,
+  StoredFileRecord,
+} from './live-backend.js';
 
 export const TRANSFER_EVENT_TYPES = [
   'session-created',
@@ -110,3 +117,115 @@ export type TransferEvent =
   | ChunkEvent
   | TransferCompleteEvent
   | TransferFailedEvent;
+
+export interface SessionCreatedPayload {
+  sessionId: string;
+  session: LiveSessionRecord;
+  createdAt: string;
+}
+
+export interface SessionPairedPayload {
+  sessionId: string;
+  session: LiveSessionRecord;
+  pairedAt: string;
+  peerFingerprint?: string | null;
+}
+
+export interface SessionLockedPayload {
+  sessionId: string;
+  reason: 'pin-attempts-exceeded' | 'expired' | 'manual';
+  lockedAt: string;
+}
+
+export interface PinRequiredPayload {
+  sessionId: string;
+  deviceFingerprint: string;
+  attemptsRemaining: number;
+  expiresAt: string;
+}
+
+export interface TransferProgressPayload {
+  sessionId: string;
+  uploadId: string;
+  fileId: string;
+  direction: LiveTransferDirection;
+  bytesTransferred: number;
+  totalBytes: number;
+  chunkIndex: number;
+  totalChunks: number;
+  bytesPerSecond: number;
+}
+
+export interface TransferCompletedPayload {
+  sessionId: string;
+  uploadId: string;
+  file: StoredFileRecord;
+  durationMs: number;
+  averageBytesPerSecond: number;
+}
+
+export interface TransferFailedPayload {
+  sessionId: string;
+  uploadId?: string;
+  fileId?: string;
+  error: {
+    code: string;
+    message: string;
+  };
+}
+
+export interface PeerConnectedPayload {
+  sessionId: string;
+  fingerprint: string;
+  name: string;
+  transport: TransferMode;
+  connectedAt: string;
+}
+
+export interface PeerDisconnectedPayload {
+  sessionId: string;
+  fingerprint: string;
+  disconnectedAt: string;
+  reason?: string;
+}
+
+export interface ClipboardUpdatedPayload {
+  clipboard: ClipboardState;
+}
+
+export interface DiscoveryUpdatePayload {
+  devices: DiscoveryDeviceRecord[];
+}
+
+export interface WatchFolderFiredPayload {
+  watchFolderId: string;
+  path: string;
+  destinationFingerprint: string;
+  files: Array<{
+    path: string;
+    size: number;
+    mimeType: string;
+  }>;
+  firedAt: string;
+}
+
+export interface BackendEventMap {
+  'session-created': SessionCreatedPayload;
+  'session-paired': SessionPairedPayload;
+  'session-locked': SessionLockedPayload;
+  'pin-required': PinRequiredPayload;
+  'transfer-progress': TransferProgressPayload;
+  'transfer-completed': TransferCompletedPayload;
+  'transfer-failed': TransferFailedPayload;
+  'peer-connected': PeerConnectedPayload;
+  'peer-disconnected': PeerDisconnectedPayload;
+  'clipboard-updated': ClipboardUpdatedPayload;
+  'discovery-update': DiscoveryUpdatePayload;
+  'watch-folder-fired': WatchFolderFiredPayload;
+}
+
+export type BackendEventName = keyof BackendEventMap;
+
+export type BackendEvent = {
+  [K in BackendEventName]: { type: K; payload: BackendEventMap[K] };
+}[BackendEventName];

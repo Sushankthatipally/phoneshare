@@ -21,6 +21,7 @@ import type {
   UploadSessionRecord,
 } from './live-backend.js';
 import { chooseTransferChunkSize } from './live-backend.js';
+import type { BackendEventMap } from './events.js';
 import {
   decryptChunk,
   deriveSessionKey,
@@ -378,12 +379,31 @@ export class DropbeamBackendClient {
     return URL.createObjectURL(blob);
   }
 
-  subscribe(onEvent: (event: BackendEventEnvelope) => void) {
+  subscribe(onEvent: (event: BackendEventEnvelope) => void): () => void;
+  subscribe<K extends keyof BackendEventMap>(
+    type: K,
+    handler: (payload: BackendEventMap[K]) => void,
+  ): () => void;
+  subscribe<K extends keyof BackendEventMap>(
+    typeOrHandler: K | ((event: BackendEventEnvelope) => void),
+    maybeHandler?: (payload: BackendEventMap[K]) => void,
+  ): () => void {
     const source = new EventSource(`${this.origin}/api/events`);
+    const isTyped = typeof typeOrHandler === 'string';
+    const targetType = isTyped ? (typeOrHandler as K) : null;
+    const catchAll = !isTyped ? (typeOrHandler as (event: BackendEventEnvelope) => void) : null;
+    const typedHandler = isTyped ? (maybeHandler as (payload: BackendEventMap[K]) => void) : null;
 
     const handler = (raw: MessageEvent<string>) => {
       try {
-        onEvent(JSON.parse(raw.data) as BackendEventEnvelope);
+        const envelope = JSON.parse(raw.data) as BackendEventEnvelope;
+        if (targetType && typedHandler) {
+          if (envelope.type === targetType) {
+            typedHandler(envelope.payload as BackendEventMap[K]);
+          }
+          return;
+        }
+        catchAll?.(envelope);
       } catch (error) {
         console.warn('DropBeam event parse failed', error);
       }
@@ -392,11 +412,20 @@ export class DropbeamBackendClient {
     source.addEventListener('snapshot', handler as EventListener);
     source.addEventListener('session-created', handler as EventListener);
     source.addEventListener('session-paired', handler as EventListener);
+    source.addEventListener('session-locked', handler as EventListener);
     source.addEventListener('session-closed', handler as EventListener);
+    source.addEventListener('pin-required', handler as EventListener);
     source.addEventListener('settings-updated', handler as EventListener);
     source.addEventListener('clipboard-updated', handler as EventListener);
     source.addEventListener('upload-started', handler as EventListener);
     source.addEventListener('upload-progress', handler as EventListener);
+    source.addEventListener('transfer-progress', handler as EventListener);
+    source.addEventListener('transfer-completed', handler as EventListener);
+    source.addEventListener('transfer-failed', handler as EventListener);
+    source.addEventListener('peer-connected', handler as EventListener);
+    source.addEventListener('peer-disconnected', handler as EventListener);
+    source.addEventListener('discovery-update', handler as EventListener);
+    source.addEventListener('watch-folder-fired', handler as EventListener);
     source.addEventListener('file-uploaded', handler as EventListener);
     source.addEventListener('file-downloaded', handler as EventListener);
     source.onmessage = handler;
