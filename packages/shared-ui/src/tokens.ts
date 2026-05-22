@@ -2,6 +2,12 @@ import tokensJson from './tokens.json' with { type: 'json' };
 
 export type DesignTokens = typeof tokensJson;
 
+type DotPath<T, P extends string = ''> = T extends object
+  ? { [K in keyof T & string]: T[K] extends object ? DotPath<T[K], `${P}${K}.`> : `${P}${K}` }[keyof T & string]
+  : never;
+
+export type DesignTokenPath = DotPath<DesignTokens>;
+
 export const tokens: DesignTokens = tokensJson;
 
 /**

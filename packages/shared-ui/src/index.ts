@@ -5,4 +5,4 @@ export * from './components/QrCode.js';
 export * from './components/SectionHeading.js';
 export * from './components/TransferRow.js';
 export { tokens, getDesignToken } from './tokens.js';
-export type { DesignTokens } from './tokens.js';
+export type { DesignTokens, DesignTokenPath } from './tokens.js';

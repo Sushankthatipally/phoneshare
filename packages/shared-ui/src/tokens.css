@@ -4,6 +4,8 @@
   /* color */
   --color-bg: #000000;
   --db-bg: #000000;
+  --color-surface: rgba(255, 255, 255, 0.03);
+  --color-surface-soft: rgba(255, 255, 255, 0.04);
   --color-panel-bg: rgba(12, 12, 12, 0.96);
   --db-panel-bg: rgba(12, 12, 12, 0.96);
   --color-panel-bg-strong: rgba(8, 8, 8, 0.98);
@@ -18,26 +20,73 @@
   --db-text-soft: rgba(255, 255, 255, 0.68);
   --color-text-dim: rgba(255, 255, 255, 0.48);
   --db-text-dim: rgba(255, 255, 255, 0.48);
+  --color-text-inverse: #000000;
   --color-blue: #c6e3ff;
   --db-blue: #c6e3ff;
   --color-green: #c7ffd4;
   --db-green: #c7ffd4;
   --color-amber: #ffe2a8;
   --db-amber: #ffe2a8;
+  --color-danger: #ff9aa2;
+  --color-track: rgba(255, 255, 255, 0.09);
+  --color-qr-surface: rgba(0, 0, 0, 0.22);
+  --color-qr-dark: #000000;
+  --color-qr-light: #ffffff;
+  --color-qr-fallback-border: rgba(255, 255, 255, 0.16);
   /* radius */
-  --radius-xl: 10px;
-  --db-radius-xl: 10px;
-  --radius-lg: 8px;
-  --db-radius-lg: 8px;
-  --radius-md: 6px;
-  --db-radius-md: 6px;
+  --radius-xs: 2px;
   --radius-sm: 4px;
   --db-radius-sm: 4px;
+  --radius-md: 6px;
+  --db-radius-md: 6px;
+  --radius-lg: 8px;
+  --db-radius-lg: 8px;
+  --radius-xl: 10px;
+  --db-radius-xl: 10px;
+  --radius-pill: 999px;
+  /* spacing */
+  --spacing-xs: 4px;
+  --spacing-sm: 8px;
+  --spacing-md: 12px;
+  --spacing-lg: 16px;
+  --spacing-xl: 24px;
+  --spacing-xxl: 32px;
   /* font */
   --font-sans: "Inter", "Segoe UI", "Helvetica Neue", system-ui, -apple-system, sans-serif;
   --db-font: "Inter", "Segoe UI", "Helvetica Neue", system-ui, -apple-system, sans-serif;
   --font-mono: "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
   --db-font-mono: "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
+  /* fontFamily */
+  --font-family-sans: Inter;
+  --font-family-mono: JetBrains Mono;
+  /* fontSize */
+  --font-size-xs: 11px;
+  --font-size-sm: 13px;
+  --font-size-base: 15px;
+  --font-size-md: 16px;
+  --font-size-lg: 19px;
+  --font-size-xl: 24px;
+  --font-size-xxl: 32px;
+  /* fontWeight */
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+  /* letterSpacing */
+  --letter-spacing-tight: -0.4;
+  --letter-spacing-normal: 0;
+  --letter-spacing-wide: 0.6;
+  --letter-spacing-wider: 1.2;
+  --letter-spacing-widest: 1.8;
+  /* lineHeight */
+  --line-height-tight: 1.1px;
+  --line-height-snug: 1.3px;
+  --line-height-normal: 1.5px;
+  --line-height-relaxed: 1.65px;
+  /* opacity */
+  --opacity-disabled: 0.48;
+  --opacity-muted: 0.68;
+  --opacity-dim: 0.48;
   /* shadow */
   --shadow-default: 0 18px 40px rgba(0, 0, 0, 0.35);
   --db-shadow: 0 18px 40px rgba(0, 0, 0, 0.35);

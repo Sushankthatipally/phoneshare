@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@babel/runtime": "^7.29.2",
+    "@dropbeam/shared-ui-rn": "workspace:*",
     "@expo/metro-runtime": "~4.0.1",
     "expo": "~52.0.0",
     "expo-background-fetch": "~13.0.0",

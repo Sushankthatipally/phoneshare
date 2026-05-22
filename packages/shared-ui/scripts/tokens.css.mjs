@@ -58,6 +58,19 @@ function camelToKebab(str) {
   return str.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase();
 }
 
+const PX_CATEGORIES = new Set(['radius', 'spacing', 'fontSize', 'lineHeight']);
+const UNITLESS_CATEGORIES = new Set(['opacity', 'fontWeight', 'letterSpacing']);
+
+function formatValue(category, value) {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number') {
+    if (UNITLESS_CATEGORIES.has(category)) return String(value);
+    if (PX_CATEGORIES.has(category)) return `${value}px`;
+    return String(value);
+  }
+  return null;
+}
+
 function buildRootBlock(tokens) {
   const lines = [];
   const categories = Object.keys(tokens);
@@ -66,14 +79,16 @@ function buildRootBlock(tokens) {
     if (!group || typeof group !== 'object') continue;
     const entries = Object.entries(group);
     if (entries.length === 0) continue;
+    const renderable = entries.filter(([, value]) => formatValue(category, value) !== null);
+    if (renderable.length === 0) continue;
     lines.push(`  /* ${category} */`);
-    for (const [key, value] of entries) {
-      if (typeof value !== 'string') continue;
+    for (const [key, value] of renderable) {
+      const formatted = formatValue(category, value);
       const canonical = `--${camelToKebab(category)}-${camelToKebab(key)}`;
-      lines.push(`  ${canonical}: ${value};`);
+      lines.push(`  ${canonical}: ${formatted};`);
       const legacy = LEGACY_ALIASES[category]?.[key];
       if (legacy && legacy !== canonical) {
-        lines.push(`  ${legacy}: ${value};`);
+        lines.push(`  ${legacy}: ${formatted};`);
       }
     }
   }

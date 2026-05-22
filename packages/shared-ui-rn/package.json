@@ -1,0 +1,34 @@
+{
+  "name": "@dropbeam/shared-ui-rn",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "peerDependencies": {
+    "react": ">=18",
+    "react-native": ">=0.74"
+  },
+  "peerDependenciesMeta": {
+    "react-native-qrcode-svg": {
+      "optional": true
+    },
+    "@react-native-community/blur": {
+      "optional": true
+    }
+  },
+  "dependencies": {
+    "@dropbeam/protocol": "workspace:*",
+    "@dropbeam/shared-ui": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.66",
+    "typescript": "latest"
+  }
+}
