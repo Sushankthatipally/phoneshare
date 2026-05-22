@@ -109,6 +109,10 @@ export interface UseDiscoveryOptions {
   selfName?: string;
   selfPort?: number;
   selfTxt?: Record<string, string>;
+  /** Convenience alias for `selfName`; some W16 callers pass this. */
+  publishName?: string;
+  /** Convenience alias for `selfPort`; some W16 callers pass this. */
+  publishPort?: number;
 }
 
 export interface DiscoveryState {

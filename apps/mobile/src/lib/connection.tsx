@@ -79,6 +79,8 @@ export interface SecureSession {
 
 export type ActiveConnection = GuestConnection | SecureSession;
 
+export type ConnectionInfo = GuestConnection | SecureSession;
+
 export type BackendEvent =
   | { type: 'transfer-requested'; sessionId: string; batch: TransferBatch }
   | { type: 'transfer-accepted'; sessionId: string; batchId: string; fileIds: string[] }
@@ -123,6 +125,9 @@ export interface HistoryEntry {
   progress: number;
   error?: string;
   createdAt: number;
+  peerFingerprint?: string;
+  direction?: 'send' | 'receive';
+  files?: Array<{ name: string; size: number; uri?: string }>;
 }
 
 const STORAGE_KEY_SESSION = '@dropbeam/session-v1';
@@ -173,6 +178,15 @@ interface ConnectionContextValue {
 
   /** Subscribe to backend SSE events for the active session. */
   subscribe: (listener: (event: BackendEvent) => void) => () => void;
+
+  /** Known devices for reconnect (stub — populated when W16 known-devices store lands). */
+  knownDevices: Array<{ fingerprint: string; name: string; origin: string }>;
+  /** Client-side settings (clipboardSync, backgroundReceive, autoAccept). */
+  settings: { clipboardSyncEnabled: boolean; backgroundReceiveEnabled: boolean };
+  /** Replace the active connection (used by share-receive / history-retry). */
+  setConnection: (connection: ActiveConnection | null) => void;
+  /** True once the persisted state has been loaded from AsyncStorage. */
+  hydrated: boolean;
 }
 
 const ConnectionContext = createContext<ConnectionContextValue | null>(null);
@@ -673,6 +687,10 @@ export function ConnectionProvider({ children }: PropsWithChildren) {
       updateHistory,
       clearHistory,
       subscribe,
+      knownDevices: [],
+      settings: { clipboardSyncEnabled: false, backgroundReceiveEnabled: false },
+      setConnection: (next: ActiveConnection | null) => setConnectionRaw(next),
+      hydrated: true,
     }),
     [
       addHistory,
@@ -745,10 +763,3 @@ function encodeBase64Url(bytes: Uint8Array): string {
 
 export type { ParsedSessionPayload } from './parseSessionPayload.js';
 export { parseSessionPayload } from './parseSessionPayload.js';
-
-// Back-compat shapes the legacy api.ts / SendScreen rely on.
-export interface ConnectionInfo {
-  origin: string;
-  token: string;
-  label: string;
-}

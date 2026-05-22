@@ -27,8 +27,17 @@ export function View({ children, style }: PropsWithChildren<{ style?: AnyStyle }
   return <RNView style={style as StyleProp<ViewStyle>}>{children}</RNView>;
 }
 
-export function Text({ children, style }: PropsWithChildren<{ style?: AnyStyle }>) {
-  return <RNText style={style as StyleProp<TextStyle>}>{children}</RNText>;
+export function Text({
+  children,
+  style,
+  onPress,
+  numberOfLines,
+}: PropsWithChildren<{ style?: AnyStyle; onPress?: () => void; numberOfLines?: number }>) {
+  return (
+    <RNText numberOfLines={numberOfLines} onPress={onPress} style={style as StyleProp<TextStyle>}>
+      {children}
+    </RNText>
+  );
 }
 
 export function ScrollView({

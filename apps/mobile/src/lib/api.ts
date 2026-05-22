@@ -1,6 +1,6 @@
 import * as FileSystem from 'expo-file-system';
 
-import type { GuestConnection } from './connection.js';
+import type { ConnectionInfo, GuestConnection } from './connection.js';
 
 /**
  * Uploads a single file to the desktop's guest endpoint.
@@ -58,6 +58,87 @@ export async function uploadGuestFile(params: {
 export async function probeHealth(connection: { origin: string }): Promise<boolean> {
   try {
     const response = await fetch(`${connection.origin}/api/health`, { method: 'GET' });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Ask the desktop to re-issue a guest session bound to a previously paired device
+ * fingerprint. The backend route is provisional — call sites must tolerate a 404
+ * and fall back to a fresh QR pair.
+ */
+export async function reconnectKnownDevice(params: {
+  origin: string;
+  fingerprint: string;
+}): Promise<{ ok: boolean; status: number; connection?: ConnectionInfo }> {
+  const { origin, fingerprint } = params;
+  try {
+    const response = await fetch(`${origin}/api/known-devices/${encodeURIComponent(fingerprint)}/reconnect`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    if (!response.ok) return { ok: false, status: response.status };
+    const data = (await response.json()) as { token?: string; label?: string; sessionId?: string };
+    if (!data.token) return { ok: false, status: response.status };
+    return {
+      ok: true,
+      status: response.status,
+      connection: {
+        kind: 'guest',
+        origin,
+        token: data.token,
+        label: data.label ?? origin,
+      },
+    };
+  } catch {
+    return { ok: false, status: 0 };
+  }
+}
+
+/**
+ * Notify the desktop of this phone's free + total storage so it can warn the
+ * user before queueing a transfer that wouldn't fit. The desktop exposes this
+ * endpoint (W12); silently no-op if it isn't there.
+ */
+export async function reportStorage(params: {
+  connection: ConnectionInfo;
+  freeBytes: number;
+  totalBytes: number;
+}): Promise<boolean> {
+  try {
+    const token = params.connection.kind === 'guest' ? params.connection.token : '';
+    const response = await fetch(`${params.connection.origin}/api/peers/storage`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { 'X-Guest-Token': token } : {}),
+      },
+      body: JSON.stringify({ freeBytes: params.freeBytes, totalBytes: params.totalBytes }),
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Push the phone's clipboard to the desktop so the desktop's clipboard-sync UI
+ * can mirror it. The backend wires this into the SSE channel.
+ */
+export async function pushClipboard(params: { connection: ConnectionInfo; text: string }): Promise<boolean> {
+  try {
+    const token = params.connection.kind === 'guest' ? params.connection.token : '';
+    const response = await fetch(`${params.connection.origin}/api/clipboard`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { 'X-Guest-Token': token } : {}),
+      },
+      body: JSON.stringify({ text: params.text }),
+    });
     return response.ok;
   } catch {
     return false;
