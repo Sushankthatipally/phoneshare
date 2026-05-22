@@ -497,13 +497,8 @@ export type PinVerificationResponse =
     }
   | {
       ok: false;
-      reason: 'mismatch';
+      reason: PinVerificationFailureReason;
       attemptsRemaining: number;
-    }
-  | {
-      ok: false;
-      reason: 'locked';
-      attemptsRemaining: 0;
     };
 
 export interface ResumeToken {

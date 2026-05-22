@@ -1,24 +1,31 @@
+import type { ReactNode } from 'react';
 import { StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
 
 import { tokens } from '../tokens.js';
 
-export type BadgeTone = 'neutral' | 'blue' | 'green' | 'amber';
+export type BadgeTone = 'neutral' | 'blue' | 'green' | 'amber' | 'danger';
 
 export interface BadgeProps {
-  label: string;
+  label?: string;
+  children?: ReactNode;
   tone?: BadgeTone;
   style?: StyleProp<ViewStyle>;
 }
 
-export function Badge({ label, tone = 'neutral', style }: BadgeProps) {
+export function Badge({ label, children, tone = 'neutral', style }: BadgeProps) {
   const color = colorFor(tone);
+  const content = label ?? (typeof children === 'string' ? children : null);
 
   return (
     <View style={[styles.badge, style]}>
       <View style={[styles.dot, { backgroundColor: color }]} />
-      <Text style={[styles.label, { color }]} numberOfLines={1}>
-        {label}
-      </Text>
+      {content !== null ? (
+        <Text style={[styles.label, { color }]} numberOfLines={1}>
+          {content}
+        </Text>
+      ) : (
+        children
+      )}
     </View>
   );
 }
@@ -31,6 +38,8 @@ function colorFor(tone: BadgeTone): string {
       return tokens.color.green;
     case 'amber':
       return tokens.color.amber;
+    case 'danger':
+      return tokens.color.danger;
     case 'neutral':
     default:
       return tokens.color.textSoft;

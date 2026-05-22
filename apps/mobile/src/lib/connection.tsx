@@ -512,7 +512,7 @@ export function ConnectionProvider({ children }: PropsWithChildren) {
     async (submittedPin: string): Promise<PinVerificationResponse> => {
       const material = sessionMaterialRef.current;
       if (!material.sessionId || !material.origin || !(connection?.kind === 'direct' || connection?.kind === 'hotspot')) {
-        const noSession: PinVerificationResponse = { ok: false, reason: 'invalid-session' };
+        const noSession: PinVerificationResponse = { ok: false, reason: 'invalid-session', attemptsRemaining: 0 };
         return noSession;
       }
 
@@ -531,10 +531,8 @@ export function ConnectionProvider({ children }: PropsWithChildren) {
         const json = (await res.json().catch(() => ({}))) as Partial<PinVerificationResponse>;
         if (json && typeof json === 'object' && 'ok' in json) {
           response = json as PinVerificationResponse;
-        } else if (res.ok) {
-          response = { ok: true, sessionId: material.sessionId, pairedAt: new Date().toISOString() };
         } else if (res.status === 423) {
-          response = { ok: false, reason: 'locked' };
+          response = { ok: false, reason: 'locked', attemptsRemaining: 0 };
         } else {
           response = { ok: false, reason: 'mismatch', attemptsRemaining: Math.max(0, attemptsRemaining - 1) };
         }
@@ -546,7 +544,7 @@ export function ConnectionProvider({ children }: PropsWithChildren) {
       if (response.ok) {
         const paired: SecureSession = {
           ...connection,
-          pairedAt: response.pairedAt,
+          pairedAt: response.session.pairing?.verifiedAt ?? new Date().toISOString(),
         };
         await setSecureConnection(paired, 'paired');
         setAttemptsRemaining(3);

@@ -21,6 +21,7 @@
   --color-text-dim: rgba(255, 255, 255, 0.48);
   --db-text-dim: rgba(255, 255, 255, 0.48);
   --color-text-inverse: #000000;
+  --color-input-bg: rgba(255, 255, 255, 0.04);
   --color-blue: #c6e3ff;
   --db-blue: #c6e3ff;
   --color-green: #c7ffd4;
@@ -63,10 +64,12 @@
   --font-size-xs: 11px;
   --font-size-sm: 13px;
   --font-size-base: 15px;
+  --font-size-body: 14px;
   --font-size-md: 16px;
   --font-size-lg: 19px;
   --font-size-xl: 24px;
   --font-size-xxl: 32px;
+  --font-size-pin-digit: 28px;
   /* fontWeight */
   --font-weight-regular: 400;
   --font-weight-medium: 500;

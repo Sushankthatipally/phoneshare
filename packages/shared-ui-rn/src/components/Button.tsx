@@ -14,7 +14,8 @@ import { tokens } from '../tokens.js';
 export type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger';
 
 export interface ButtonProps {
-  label: string;
+  label?: string;
+  children?: ReactNode;
   onPress?: () => void;
   variant?: ButtonVariant;
   disabled?: boolean;
@@ -28,6 +29,7 @@ export interface ButtonProps {
 
 export function Button({
   label,
+  children,
   onPress,
   variant = 'primary',
   disabled,
@@ -59,9 +61,12 @@ export function Button({
       ]}
     >
       {leading}
-      <Text style={[styles.label, { color: palette.fg }, labelStyle]} numberOfLines={1}>
-        {label}
-      </Text>
+      {label !== undefined ? (
+        <Text style={[styles.label, { color: palette.fg }, labelStyle]} numberOfLines={1}>
+          {label}
+        </Text>
+      ) : null}
+      {children}
       {trailing}
     </Pressable>
   );
