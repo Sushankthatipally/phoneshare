@@ -1,8 +1,9 @@
-import { createWriteStream } from 'node:fs';
+import { createReadStream, createWriteStream } from 'node:fs';
 import {
   access,
   appendFile,
   mkdir,
+  open as openFile,
   readFile,
   rename,
   writeFile,
@@ -27,8 +28,9 @@ import {
 
 const QR_TTL_MS = 10 * 60 * 1000;
 const GUEST_TTL_MS = 60 * 60 * 1000;
-const MAX_PIN_ATTEMPTS = 3;
+export const MAX_PIN_ATTEMPTS = 3;
 const PAIRING_KEY_TTL_MS = 10 * 60 * 1000;
+const FINGERPRINT_HEAD_BYTES = 256 * 1024;
 
 const DEFAULT_SETTINGS = {
   deviceName: 'DropBeam Desktop',
@@ -202,7 +204,7 @@ export class LocalBackendStore {
     const now = new Date().toISOString();
     const sessionId = randomUUID();
     const pairingOrigin = normalizeOrigin(input.origin ?? this.settings.publicOrigin);
-    const backendOrigin = rewriteLoopbackToLan(normalizeOrigin(input.backendOrigin ?? defaultBackendOrigin()));
+    const backendOrigin = rewriteLoopbackToLan(normalizeOrigin(input.backendOrigin ?? getPreferredLanOrigin().origin));
     const ticket = await createPairingTicket({
       backendOrigin,
       pairingOrigin,
@@ -669,9 +671,8 @@ export class LocalBackendStore {
   // LAN-routable origin (http://192.168.x.x:17619) for clients that need to share URLs
   // with phones / other devices on the network.
   lanOrigin() {
-    const lan = pickLanIPv4();
-    const port = process.env.DROPBEAM_BACKEND_PORT ?? '17619';
-    return lan ? `http://${lan}:${port}` : null;
+    const preferred = getPreferredLanOrigin();
+    return preferred.host === '127.0.0.1' ? null : preferred.origin;
   }
 
   async createGuestShare(input = {}) {
@@ -783,14 +784,17 @@ export class LocalBackendStore {
     const chunkSize = sanitizeChunkSize(input.chunkSize);
     const totalChunks = Math.max(1, Number.isFinite(Number(input.totalChunks)) ? Number(input.totalChunks) : Math.ceil(size / chunkSize));
     const lastModified = Number.isFinite(Number(input.lastModified)) ? Number(input.lastModified) : null;
+    const sourceDeviceFingerprint = sanitizeText(input.sourceDeviceFingerprint)
+      ?? session.peerDevice?.fingerprint
+      ?? null;
+    const fileHashFirst256KB = sanitizeText(input.fileHashFirst256KB) ?? '';
     const fingerprint = createUploadFingerprint({
-      sessionId,
       direction,
+      fileHashFirst256KB,
       name,
       relativePath,
       size,
-      lastModified,
-      sourceDeviceName,
+      sourceDeviceFingerprint,
     });
 
     const existing = [...this.uploads.values()].find(
@@ -1417,9 +1421,9 @@ function rewriteLoopbackToLan(origin) {
   try {
     const url = new URL(origin);
     if (url.hostname === '127.0.0.1' || url.hostname === 'localhost' || url.hostname === '::1') {
-      const lan = pickLanIPv4();
-      if (lan) {
-        url.hostname = lan;
+      const preferred = getPreferredLanOrigin();
+      if (preferred.host !== '127.0.0.1') {
+        url.hostname = preferred.host;
         return url.toString().replace(/\/+$/, '');
       }
     }
@@ -1429,80 +1433,54 @@ function rewriteLoopbackToLan(origin) {
   }
 }
 
-function pickLanIPv4() {
-  return listLanIPv4()[0] ?? null;
+// Single source of truth for picking a LAN-routable IPv4 address.
+// Excludes loopback, link-local 169.254/16, and VPN/tun adapters by name heuristic.
+// Ranks: physical ethernet > wifi > other.
+export function getPreferredLanOrigin() {
+  const port = process.env.DROPBEAM_BACKEND_PORT ?? '17619';
+  const best = pickPreferredLanInterface();
+  if (best) {
+    return { host: best.address, score: best.score, interface: best.name, origin: `http://${best.address}:${port}` };
+  }
+  return { host: '127.0.0.1', score: -1, interface: null, origin: `http://127.0.0.1:${port}` };
 }
 
-// Return all non-loopback IPv4 addresses sorted with the most likely physical Wi-Fi/Ethernet
-// adapter first. VMware / Hyper-V / WSL virtual adapters (192.168.x where x is large like 193)
-// and adapter names containing "Virtual", "VMware", "Hyper-V", "WSL", "VPN" are deprioritized.
-function listLanIPv4() {
+function pickPreferredLanInterface() {
   try {
     const interfaces = networkInterfaces();
     const candidates = [];
     for (const name of Object.keys(interfaces)) {
-      const lowerName = name.toLowerCase();
-      const isVirtual = /(virtual|vmware|hyper-?v|wsl|vpn|loopback|vethernet)/i.test(lowerName);
+      const lower = name.toLowerCase();
+      // VPN / tun / tap adapters: exclude.
+      if (/^(tun|utun|tap|vpn|tailscale|zerotier|wireguard|wg|ppp)/.test(lower)) continue;
+      // Virtualization / bridge adapters: exclude (Docker, VMware, Hyper-V, WSL, VirtualBox, vEthernet).
+      if (/(vmware|virtual|vbox|hyper-?v|vethernet|docker|wsl|bridge)/.test(lower)) continue;
+
       for (const iface of interfaces[name] ?? []) {
         if (iface.family !== 'IPv4' || iface.internal || !iface.address) continue;
-        // Subnet preference: 192.168.0/1.x are typical home routers; 10.x corporate;
-        // 172.16-31 less common; everything else lower.
-        let subnetScore = 9;
-        const m = iface.address.match(/^192\.168\.(\d+)\./);
-        if (m) {
-          const second = Number(m[1]);
-          // 192.168.0 and 192.168.1 are the canonical home subnets — strongly prefer.
-          subnetScore = second === 0 || second === 1 ? 0 : second < 10 ? 1 : 5;
-        } else if (/^10\./.test(iface.address)) {
-          subnetScore = 2;
-        } else if (/^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(iface.address)) {
-          subnetScore = 3;
-        }
-        candidates.push({
-          address: iface.address,
-          name,
-          isVirtual,
-          priority: (isVirtual ? 100 : 0) + subnetScore,
-        });
-      }
-    }
-    candidates.sort((a, b) => a.priority - b.priority);
-    return candidates.map((c) => c.address);
-  } catch {
-    return [];
-  }
-}
+        // Skip link-local 169.254/16.
+        if (/^169\.254\./.test(iface.address)) continue;
 
-// Pick the first non-loopback IPv4 LAN address so QR codes contain a URL the phone can actually reach.
-// Falls back to 127.0.0.1 if no LAN address is available (e.g. fully offline).
-function defaultBackendOrigin() {
-  const port = process.env.DROPBEAM_BACKEND_PORT ?? '17619';
-  try {
-    const interfaces = networkInterfaces();
-    const candidates = [];
-    for (const name of Object.keys(interfaces)) {
-      for (const iface of interfaces[name] ?? []) {
-        if (iface.family === 'IPv4' && !iface.internal && iface.address) {
-          // Prefer common private LAN ranges first
-          const priority = /^192\.168\./.test(iface.address)
-            ? 0
-            : /^10\./.test(iface.address)
-              ? 1
-              : /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(iface.address)
-                ? 2
-                : 3;
-          candidates.push({ address: iface.address, priority });
-        }
+        let score = 0;
+        if (/(^en\d|ethernet|eth\d)/.test(lower)) score += 100;
+        else if (/(wi-?fi|wlan|wireless|airport)/.test(lower)) score += 80;
+        else score += 20;
+
+        // Subnet preference.
+        if (/^192\.168\.(0|1)\./.test(iface.address)) score += 20;
+        else if (/^192\.168\./.test(iface.address)) score += 12;
+        else if (/^10\./.test(iface.address)) score += 10;
+        else if (/^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(iface.address)) score += 8;
+        else score += 1;
+
+        candidates.push({ address: iface.address, name, score });
       }
     }
-    candidates.sort((a, b) => a.priority - b.priority);
-    if (candidates.length > 0) {
-      return `http://${candidates[0].address}:${port}`;
-    }
+    candidates.sort((a, b) => b.score - a.score);
+    return candidates[0] ?? null;
   } catch {
-    // Fall through to loopback.
+    return null;
   }
-  return `http://127.0.0.1:${port}`;
 }
 
 async function drainRequest(request) {
@@ -1518,22 +1496,50 @@ async function readJson(request) {
   return text ? JSON.parse(text) : {};
 }
 
-async function hashFile(path) {
+export async function hashFile(path) {
   const hash = createHash('sha256');
-  hash.update(await readFile(path));
+  const stream = createReadStream(path, { highWaterMark: 1024 * 1024 });
+  for await (const chunk of stream) {
+    hash.update(chunk);
+  }
   return hash.digest('hex');
 }
 
-function createUploadFingerprint(input) {
-  return [
-    input.sessionId,
-    input.direction,
-    input.name,
-    input.relativePath ?? '',
-    input.size,
-    input.lastModified ?? '',
-    input.sourceDeviceName ?? '',
-  ].join('::');
+export async function hashFileHead(path, byteLimit = FINGERPRINT_HEAD_BYTES) {
+  const hash = createHash('sha256');
+  let handle;
+  try {
+    handle = await openFile(path, 'r');
+    const buffer = Buffer.allocUnsafe(Math.min(byteLimit, 1024 * 1024));
+    let read = 0;
+    while (read < byteLimit) {
+      const { bytesRead } = await handle.read(buffer, 0, Math.min(buffer.length, byteLimit - read), read);
+      if (!bytesRead) break;
+      hash.update(buffer.subarray(0, bytesRead));
+      read += bytesRead;
+    }
+  } finally {
+    await handle?.close();
+  }
+  return hash.digest('hex');
+}
+
+// Stable across re-pairing: the sessionId must NOT participate.
+// Identity = (direction, fileHashFirst256KB, name, relativePath, size, sourceDeviceFingerprint).
+export function createUploadFingerprint(input) {
+  const hash = createHash('sha256');
+  hash.update(String(input.direction ?? ''));
+  hash.update(' ');
+  hash.update(String(input.fileHashFirst256KB ?? ''));
+  hash.update(' ');
+  hash.update(String(input.name ?? ''));
+  hash.update(' ');
+  hash.update(String(input.relativePath ?? ''));
+  hash.update(' ');
+  hash.update(String(input.size ?? ''));
+  hash.update(' ');
+  hash.update(String(input.sourceDeviceFingerprint ?? ''));
+  return hash.digest('hex');
 }
 
 function createDeviceFingerprint(name, platform) {
