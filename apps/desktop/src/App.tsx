@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Download, History as HistoryIcon, House, Link2, SendHorizontal, Settings as SettingsIcon, Zap } from 'lucide-react';
 
 import { Button } from '@dropbeam/shared-ui';
+import { resolveBackendOrigin } from '@dropbeam/protocol';
 
 import { useDesktopBackend } from './features/dashboard/useDesktopBackend.js';
 import { ConnectionPicker, type ConnectionChoice, type ReconnectIntent } from './components/ConnectionPicker.js';
@@ -15,6 +16,14 @@ import { Receive } from './screens/Receive.js';
 import { Send } from './screens/Send.js';
 import { Settings } from './screens/Settings.js';
 import { Guest } from './screens/Guest.js';
+import { listenTauri } from './lib/tauri.js';
+
+interface WatchFolderEvent {
+  watchId: string;
+  path: string;
+  kind: string;
+  destinationFingerprint?: string;
+}
 
 type Screen = 'home' | 'send' | 'receive' | 'history' | 'guest' | 'settings';
 
@@ -217,6 +226,35 @@ export default function App() {
       body: preview,
     });
   }, [backend.clipboard, pushToast]);
+
+  // Watch-folder events: when the Tauri watcher emits, hand them off to the
+  // backend which holds the canonical watch-folder config and drives uploads.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    const origin = resolveBackendOrigin(import.meta.env.VITE_DROPBEAM_API);
+    (async () => {
+      unlisten = await listenTauri<WatchFolderEvent>('dropbeam:watch', async (event) => {
+        const { watchId, path, kind, destinationFingerprint } = event.payload;
+        try {
+          await fetch(`${origin}/api/watch-folder/file-detected`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              watchId,
+              path,
+              kind,
+              destinationFingerprint: destinationFingerprint ?? null,
+            }),
+          });
+        } catch (error) {
+          console.error('failed to notify backend of watch-folder file', error);
+        }
+      });
+    })();
+    return () => {
+      unlisten?.();
+    };
+  }, []);
 
   const needsOnboarding = !backend.loading && backend.settings && !backend.settings.onboardingComplete;
 

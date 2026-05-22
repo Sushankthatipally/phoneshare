@@ -1,132 +1,42 @@
-use std::{process::Stdio, sync::Arc};
+// iOS USB transport is intentionally a stub in this build. The host-side
+// iproxy (usbmuxd) plumbing is documented in the rebuild plan but not wired:
+// every call returns `state: "unsupported"` so the UI can render a single,
+// honest hint ("Connect over Wi-Fi instead") without dead spinners.
 
-use anyhow::{bail, Context, Result};
 use serde::Serialize;
-use tokio::{
-    process::{Child, Command},
-    sync::Mutex,
-};
 
-#[cfg(windows)]
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-
-#[cfg(windows)]
-fn hide_console(cmd: &mut Command) -> &mut Command {
-    cmd.creation_flags(CREATE_NO_WINDOW)
-}
-
-#[cfg(not(windows))]
-fn hide_console(cmd: &mut Command) -> &mut Command {
-    cmd
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IosStatus {
+    pub state: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct UsbIosStatus {
-    pub usbmux_required: bool,
-    pub iproxy_binary: String,
-    pub available: bool,
-    pub host_port: u16,
-    pub device_port: u16,
-    pub tunnel_state: String,
+pub struct IosTunnelResult {
+    pub ok: bool,
+    pub state: String,
 }
 
-#[derive(Debug, Clone)]
-pub struct UsbIosBridge {
-    iproxy_binary: String,
-    host_port: u16,
-    device_port: u16,
-    tunnel_process: Arc<Mutex<Option<Child>>>,
+#[tauri::command]
+pub async fn usb_ios_status() -> IosStatus {
+    IosStatus {
+        state: "unsupported".to_string(),
+    }
 }
 
-impl UsbIosBridge {
-    pub fn new(iproxy_binary: impl Into<String>, host_port: u16, device_port: u16) -> Self {
-        Self {
-            iproxy_binary: iproxy_binary.into(),
-            host_port,
-            device_port,
-            tunnel_process: Arc::new(Mutex::new(None)),
-        }
+#[tauri::command]
+pub async fn usb_ios_ensure_tunnel() -> IosTunnelResult {
+    IosTunnelResult {
+        ok: false,
+        state: "unsupported".to_string(),
     }
+}
 
-    pub async fn status(&self) -> UsbIosStatus {
-        let available = self.detect_iproxy().await.is_ok();
-        let tunnel_state = if !available {
-            "iproxy-unavailable".to_string()
-        } else if self.tunnel_process.lock().await.is_some() {
-            "forward-active".to_string()
-        } else {
-            "ready".to_string()
-        };
-
-        UsbIosStatus {
-            usbmux_required: true,
-            iproxy_binary: self.iproxy_binary.clone(),
-            available,
-            host_port: self.host_port,
-            device_port: self.device_port,
-            tunnel_state,
-        }
-    }
-
-    pub async fn ensure_forward_tunnel(&self) -> Result<UsbIosStatus> {
-        self.detect_iproxy().await?;
-
-        let mut guard = self.tunnel_process.lock().await;
-        if guard.is_none() {
-            let mut command = Command::new(&self.iproxy_binary);
-            command
-                .arg(self.host_port.to_string())
-                .arg(self.device_port.to_string())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null());
-            hide_console(&mut command);
-            let child = command
-                .spawn()
-                .with_context(|| format!("failed to launch {}", self.iproxy_binary))?;
-            *guard = Some(child);
-        }
-        drop(guard);
-
-        Ok(UsbIosStatus {
-            usbmux_required: true,
-            iproxy_binary: self.iproxy_binary.clone(),
-            available: true,
-            host_port: self.host_port,
-            device_port: self.device_port,
-            tunnel_state: "forward-active".to_string(),
-        })
-    }
-
-    pub async fn stop_forward_tunnel(&self) -> Result<()> {
-        let mut guard = self.tunnel_process.lock().await;
-        let Some(mut child) = guard.take() else {
-            return Ok(());
-        };
-
-        child
-            .kill()
-            .await
-            .context("failed to stop iproxy tunnel")?;
-        Ok(())
-    }
-
-    async fn detect_iproxy(&self) -> Result<()> {
-        let mut command = Command::new(&self.iproxy_binary);
-        command
-            .arg("--version")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        hide_console(&mut command);
-        let output = command
-            .output()
-            .await
-            .with_context(|| format!("failed to execute {}", self.iproxy_binary))?;
-
-        if !output.status.success() {
-            bail!("{} is installed but returned a non-zero exit code", self.iproxy_binary);
-        }
-
-        Ok(())
+#[tauri::command]
+pub async fn usb_ios_stop_tunnel() -> IosTunnelResult {
+    IosTunnelResult {
+        ok: false,
+        state: "unsupported".to_string(),
     }
 }

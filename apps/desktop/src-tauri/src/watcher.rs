@@ -20,6 +20,8 @@ pub struct WatchEvent {
     pub watch_id: String,
     pub path: String,
     pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub destination_fingerprint: Option<String>,
 }
 
 pub struct WatcherState {
@@ -38,14 +40,28 @@ impl WatcherState {
 pub async fn start_watch_folder(
     app: AppHandle,
     state: State<'_, WatcherState>,
+    id: Option<String>,
     path: String,
+    destination_fingerprint: Option<String>,
 ) -> Result<String, String> {
-    let watch_id = Uuid::new_v4().to_string();
+    let watch_id = id.unwrap_or_else(|| Uuid::new_v4().to_string());
     let id_for_event = watch_id.clone();
+    let dest_for_event = destination_fingerprint.clone();
     let target = PathBuf::from(&path);
 
     if !target.exists() {
         return Err(format!("folder does not exist: {path}"));
+    }
+
+    {
+        let guard = state
+            .inner
+            .lock()
+            .map_err(|_| "watcher state lock poisoned".to_string())?;
+        if guard.contains_key(&watch_id) {
+            // Idempotent: caller can re-issue start with the same id without leaking watchers.
+            return Ok(watch_id);
+        }
     }
 
     let mut watcher = notify::recommended_watcher(move |result: Result<Event, notify::Error>| {
@@ -71,6 +87,7 @@ pub async fn start_watch_folder(
                     watch_id: id_for_event.clone(),
                     path: path.to_string_lossy().into_owned(),
                     kind: "created".into(),
+                    destination_fingerprint: dest_for_event.clone(),
                 };
 
                 let _ = app.emit("dropbeam:watch", payload);
@@ -96,18 +113,19 @@ pub async fn start_watch_folder(
 #[tauri::command]
 pub async fn stop_watch_folder(
     state: State<'_, WatcherState>,
-    watch_id: String,
+    id: String,
 ) -> Result<(), String> {
     let removed = state
         .inner
         .lock()
         .map_err(|_| "watcher state lock poisoned".to_string())?
-        .remove(&watch_id);
+        .remove(&id);
 
     if removed.is_none() {
-        return Err(format!("no watch with id {watch_id}"));
+        // Idempotent: stopping an unknown id is not an error.
+        return Ok(());
     }
-    tracing::info!("stopped watch_id={watch_id}");
+    tracing::info!("stopped watch_id={id}");
     Ok(())
 }
 
