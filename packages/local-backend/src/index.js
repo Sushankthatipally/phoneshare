@@ -179,6 +179,12 @@ async function handleRequest(req, res) {
       const body = await readJson(req);
       return sendJson(res, 200, { ok: true, session: await store.acceptSession(sessionId, body ?? {}) });
     }
+    if (tail === 'pin-verify' && req.method === 'POST') {
+      const body = await readJson(req);
+      const result = await store.verifyPin(sessionId, body ?? {});
+      const status = result.ok ? 200 : result.reason === 'locked' ? 423 : 401;
+      return sendJson(res, status, result);
+    }
     if (tail === 'decline' && req.method === 'POST') {
       const body = await readJson(req);
       return sendJson(res, 200, { ok: true, session: await store.declineSession(sessionId, body ?? {}) });

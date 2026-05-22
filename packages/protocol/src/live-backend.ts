@@ -349,6 +349,64 @@ export interface BackendEventEnvelope<T = unknown> {
   payload: T;
 }
 
+export interface PinVerificationRequest {
+  pin: string;
+  deviceFingerprint: string;
+}
+
+export type PinVerificationResponse =
+  | {
+      ok: true;
+      session: LiveSessionRecord;
+      attemptsRemaining: number;
+    }
+  | {
+      ok: false;
+      reason: 'mismatch';
+      attemptsRemaining: number;
+    }
+  | {
+      ok: false;
+      reason: 'locked';
+      attemptsRemaining: 0;
+    };
+
+export interface PinRequiredPayload {
+  sessionId: string;
+  attemptsRemaining: number;
+  expiresAt: string | null;
+}
+
+export interface SessionLockedPayload {
+  sessionId: string;
+  reason: 'pin-attempts-exhausted' | 'expired' | 'manual';
+  lockedAt: string;
+}
+
+export interface BackendEventMap {
+  'session-created': { session: LiveSessionRecord };
+  'session-updated': { session: LiveSessionRecord };
+  'session-connect-requested': { session: LiveSessionRecord };
+  'session-paired': { session: LiveSessionRecord };
+  'session-declined': { session: LiveSessionRecord };
+  'session-closed': { session: LiveSessionRecord };
+  'session-locked': SessionLockedPayload;
+  'pin-required': PinRequiredPayload;
+  'pin-mismatch': { sessionId: string; attemptsRemaining: number };
+  'settings-updated': { settings: BackendSettings };
+  'clipboard-updated': { clipboard: ClipboardState };
+  'trusted-updated': { trustedDevices: TrustedDeviceRecord[] };
+  'transfer-requested': { sessionId: string; batch: PendingTransferBatch };
+  'transfer-accepted': { sessionId: string; batchId: string; fileIds: string[] };
+  'transfer-declined': { sessionId: string; batchId: string; reason: string | null };
+  'upload-started': { upload: UploadSessionRecord };
+  'upload-progress': { upload: UploadSessionRecord };
+  'file-uploaded': { session: LiveSessionRecord; file: StoredFileRecord };
+  'file-downloaded': { session: LiveSessionRecord; file: StoredFileRecord };
+}
+
+export type BackendEventName = keyof BackendEventMap;
+
 export function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) {
     return '0 B';
