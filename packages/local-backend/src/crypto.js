@@ -38,7 +38,7 @@ export async function createPairingTicket({
   };
 }
 
-export async function deriveSessionSecret({ privateKey, remotePublicKey, sessionId }) {
+export async function deriveSharedSecret({ privateKey, remotePublicKey }) {
   const subtle = requireSubtleCrypto();
   const remoteKey = await subtle.importKey(
     'raw',
@@ -47,7 +47,7 @@ export async function deriveSessionSecret({ privateKey, remotePublicKey, session
     false,
     [],
   );
-  const sharedSecret = new Uint8Array(
+  return new Uint8Array(
     await subtle.deriveBits(
       {
         name: 'X25519',
@@ -57,19 +57,69 @@ export async function deriveSessionSecret({ privateKey, remotePublicKey, session
       256,
     ),
   );
+}
+
+export async function deriveSessionSecret({ privateKey, remotePublicKey, sessionId, sharedSecret }) {
+  const subtle = requireSubtleCrypto();
+  const secret = sharedSecret
+    ? (sharedSecret instanceof Uint8Array ? sharedSecret : new Uint8Array(sharedSecret))
+    : await deriveSharedSecret({ privateKey, remotePublicKey });
   const rawKey = await hkdfSha256(
-    sharedSecret,
+    secret,
     encodeUtf8(sessionId),
     encodeUtf8('dropbeam-session-key'),
     32,
   );
-  const digest = new Uint8Array(await subtle.digest('SHA-256', sharedSecret));
+  const digest = new Uint8Array(await subtle.digest('SHA-256', secret));
 
   return {
     algorithm: 'x25519-hkdf-sha256/aes-256-gcm',
     keyId: toHex(digest.slice(0, 8)),
     rawKey,
   };
+}
+
+// Mirrors @dropbeam/crypto-core derivePinCode: 6-digit SAS from HKDF over shared
+// secret with salt=sessionId and info="dropbeam-sas-v1". Must stay byte-for-byte
+// identical to the crypto-core implementation so phone and backend compute the
+// same code.
+export async function derivePinCode(sharedSecret, sessionId) {
+  const secret = sharedSecret instanceof Uint8Array ? sharedSecret : new Uint8Array(sharedSecret);
+  const derivedBits = await hkdfSha256(
+    secret,
+    encodeUtf8(sessionId),
+    encodeUtf8('dropbeam-sas-v1'),
+    4,
+  );
+  const view = new DataView(derivedBits.buffer, derivedBits.byteOffset, derivedBits.byteLength);
+  const value = view.getUint32(0, false);
+  return (value % 1_000_000).toString().padStart(6, '0');
+}
+
+// Overwrite a Uint8Array/Buffer in place — used to wipe pairing key material on
+// lockout. No allocation: same memory is rewritten with zeros.
+export function zeroBuffer(buf) {
+  if (!buf) return;
+  if (buf instanceof Uint8Array) {
+    buf.fill(0);
+    return;
+  }
+  if (Array.isArray(buf)) {
+    for (let i = 0; i < buf.length; i += 1) buf[i] = 0;
+  }
+}
+
+// Export an X25519 private CryptoKey to a JWK string so we can persist it to
+// state.json and re-import after a backend restart.
+export async function exportPrivateKeyJwk(privateKey) {
+  const subtle = requireSubtleCrypto();
+  const jwk = await subtle.exportKey('jwk', privateKey);
+  return jwk;
+}
+
+export async function importPrivateKeyJwk(jwk) {
+  const subtle = requireSubtleCrypto();
+  return subtle.importKey('jwk', jwk, X25519_ALGORITHM, true, ['deriveBits']);
 }
 
 export async function encryptTransferBuffer({

@@ -366,16 +366,26 @@ export interface BackendEventEnvelope<T = unknown> {
 }
 
 export interface PinVerificationRequest {
-  sessionId: string;
   pin: string;
   deviceFingerprint: string;
 }
 
-export interface PinVerificationResponse {
-  ok: boolean;
-  attemptsRemaining?: number;
-  locked?: boolean;
-}
+export type PinVerificationResponse =
+  | {
+      ok: true;
+      session: LiveSessionRecord;
+      attemptsRemaining: number;
+    }
+  | {
+      ok: false;
+      reason: 'mismatch';
+      attemptsRemaining: number;
+    }
+  | {
+      ok: false;
+      reason: 'locked';
+      attemptsRemaining: 0;
+    };
 
 export interface ResumeToken {
   uploadId: string;
@@ -416,6 +426,7 @@ export interface ReconnectToKnownDeviceRequest {
   fingerprint: string;
   preferTransport?: 'wifi' | 'usb' | 'hotspot';
 }
+
 
 export function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) {

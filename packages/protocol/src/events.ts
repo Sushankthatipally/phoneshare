@@ -1,11 +1,15 @@
 import type { FileDescriptor, FileManifest, PacketHeader } from './packets.js';
 import type { PairingState, SessionState, TransferMode } from './session.js';
 import type {
+  BackendSettings,
   ClipboardState,
   DiscoveryDeviceRecord,
   LiveSessionRecord,
   LiveTransferDirection,
+  PendingTransferBatch,
   StoredFileRecord,
+  TrustedDeviceRecord,
+  UploadSessionRecord,
 } from './live-backend.js';
 
 export const TRANSFER_EVENT_TYPES = [
@@ -133,15 +137,15 @@ export interface SessionPairedPayload {
 
 export interface SessionLockedPayload {
   sessionId: string;
-  reason: 'pin-attempts-exceeded' | 'expired' | 'manual';
+  reason: 'pin-attempts-exhausted' | 'pin-attempts-exceeded' | 'expired' | 'manual';
   lockedAt: string;
 }
 
 export interface PinRequiredPayload {
   sessionId: string;
-  deviceFingerprint: string;
+  deviceFingerprint?: string;
   attemptsRemaining: number;
-  expiresAt: string;
+  expiresAt: string | null;
 }
 
 export interface TransferProgressPayload {
@@ -211,15 +215,29 @@ export interface WatchFolderFiredPayload {
 
 export interface BackendEventMap {
   'session-created': SessionCreatedPayload;
+  'session-updated': { session: LiveSessionRecord };
+  'session-connect-requested': { session: LiveSessionRecord };
   'session-paired': SessionPairedPayload;
+  'session-declined': { session: LiveSessionRecord };
+  'session-closed': { session: LiveSessionRecord };
   'session-locked': SessionLockedPayload;
   'pin-required': PinRequiredPayload;
+  'pin-mismatch': { sessionId: string; attemptsRemaining: number };
+  'settings-updated': { settings: BackendSettings };
+  'clipboard-updated': ClipboardUpdatedPayload;
+  'trusted-updated': { trustedDevices: TrustedDeviceRecord[] };
+  'transfer-requested': { sessionId: string; batch: PendingTransferBatch };
+  'transfer-accepted': { sessionId: string; batchId: string; fileIds: string[] };
+  'transfer-declined': { sessionId: string; batchId: string; reason: string | null };
   'transfer-progress': TransferProgressPayload;
   'transfer-completed': TransferCompletedPayload;
   'transfer-failed': TransferFailedPayload;
+  'upload-started': { upload: UploadSessionRecord };
+  'upload-progress': { upload: UploadSessionRecord };
+  'file-uploaded': { session: LiveSessionRecord; file: StoredFileRecord };
+  'file-downloaded': { session: LiveSessionRecord; file: StoredFileRecord };
   'peer-connected': PeerConnectedPayload;
   'peer-disconnected': PeerDisconnectedPayload;
-  'clipboard-updated': ClipboardUpdatedPayload;
   'discovery-update': DiscoveryUpdatePayload;
   'watch-folder-fired': WatchFolderFiredPayload;
 }

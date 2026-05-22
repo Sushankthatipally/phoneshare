@@ -8,7 +8,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { networkInterfaces } from 'node:os';
 import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -16,13 +16,19 @@ import { pipeline } from 'node:stream/promises';
 import {
   createPairingTicket,
   decryptTransferChunk,
+  derivePinCode,
   deriveSessionSecret,
+  deriveSharedSecret,
   encryptTransferBuffer,
+  exportPrivateKeyJwk,
+  importPrivateKeyJwk,
+  zeroBuffer,
 } from './crypto.js';
 
 const QR_TTL_MS = 10 * 60 * 1000;
 const GUEST_TTL_MS = 60 * 60 * 1000;
 const MAX_PIN_ATTEMPTS = 3;
+const PAIRING_KEY_TTL_MS = 10 * 60 * 1000;
 
 const DEFAULT_SETTINGS = {
   deviceName: 'DropBeam Desktop',
@@ -42,11 +48,13 @@ const DEFAULT_SETTINGS = {
 const SESSION_STATES = {
   pairing: 'pairing',
   awaitingAccept: 'awaiting-accept',
+  pinRequired: 'pin-required',
   paired: 'paired',
   transferring: 'transferring',
   completed: 'completed',
   closed: 'closed',
   failed: 'failed',
+  locked: 'locked',
 };
 
 const DIRECTION_VALUES = new Set(['desktop-to-phone', 'phone-to-desktop']);
@@ -94,6 +102,7 @@ export class LocalBackendStore {
       this.trustedDevices = new Map(Object.entries(parsed.trustedDevices ?? {}));
       this.knownDevices = new Map(Object.entries(parsed.knownDevices ?? {}));
       this.guestShares = new Map(Object.entries(parsed.guestShares ?? {}));
+      await this.restorePairingKeys(parsed.pairingKeys ?? {});
       this.rebuildFileIndex();
       return;
     } catch (error) {
@@ -103,6 +112,33 @@ export class LocalBackendStore {
     }
 
     await this.persist();
+  }
+
+  // pairingKeys is persisted as { [sessionId]: { publicKey, privateKeyJwk,
+  // createdAt, expiresAt } }. Entries older than PAIRING_KEY_TTL_MS or past
+  // their expiresAt are dropped on boot; surviving entries are re-imported into
+  // an in-memory CryptoKey so PIN verification still works after a sidecar
+  // restart that happens mid-pairing.
+  async restorePairingKeys(persisted) {
+    const now = Date.now();
+    for (const [sessionId, entry] of Object.entries(persisted)) {
+      if (!entry?.privateKeyJwk || !entry?.publicKey) continue;
+      const createdAt = Date.parse(entry.createdAt ?? '');
+      const expiresAt = Date.parse(entry.expiresAt ?? '');
+      if (Number.isFinite(expiresAt) && expiresAt < now) continue;
+      if (Number.isFinite(createdAt) && now - createdAt > PAIRING_KEY_TTL_MS) continue;
+      try {
+        const privateKey = await importPrivateKeyJwk(entry.privateKeyJwk);
+        this.pairingKeys.set(sessionId, {
+          privateKey,
+          publicKey: entry.publicKey,
+          createdAt: entry.createdAt,
+          expiresAt: entry.expiresAt,
+        });
+      } catch {
+        // skip corrupted entries
+      }
+    }
   }
 
   // ─── Settings ─────────────────────────────────────────────
@@ -200,6 +236,7 @@ export class LocalBackendStore {
         verifiedAt: null,
         acceptedAt: null,
         attempts: 0,
+        attemptsRemaining: MAX_PIN_ATTEMPTS,
       },
       pendingRequest: null,
       pendingTransfers: [],
@@ -210,7 +247,13 @@ export class LocalBackendStore {
       eventCount: 0,
     };
 
-    this.pairingKeys.set(sessionId, { privateKey: ticket.privateKey, publicKey: ticket.publicKey });
+    const nowMs = Date.now();
+    this.pairingKeys.set(sessionId, {
+      privateKey: ticket.privateKey,
+      publicKey: ticket.publicKey,
+      createdAt: new Date(nowMs).toISOString(),
+      expiresAt: new Date(nowMs + PAIRING_KEY_TTL_MS).toISOString(),
+    });
     this.sessions.set(sessionId, session);
     await this.persist();
     this.broadcast('session-created', { session: this.publicSession(session) });
@@ -234,10 +277,23 @@ export class LocalBackendStore {
     session.pairing.pairingUrl = ticket.pairingUrl;
     session.pairing.qrPayload = ticket.payload;
     session.pairing.attempts = 0;
+    session.pairing.attemptsRemaining = MAX_PIN_ATTEMPTS;
+    session.pairing.verifiedAt = null;
+    session.pairing.acceptedAt = null;
+    session.pairing.encrypted = false;
     session.expiresAt = new Date(Date.now() + QR_TTL_MS).toISOString();
     session.state = SESSION_STATES.pairing;
     session.pendingRequest = null;
-    this.pairingKeys.set(sessionId, { privateKey: ticket.privateKey, publicKey: ticket.publicKey });
+    session.pinChallenge = null;
+    this.zeroPairingKeys(sessionId);
+    this.sessionSecrets.delete(sessionId);
+    const regenNowMs = Date.now();
+    this.pairingKeys.set(sessionId, {
+      privateKey: ticket.privateKey,
+      publicKey: ticket.publicKey,
+      createdAt: new Date(regenNowMs).toISOString(),
+      expiresAt: new Date(regenNowMs + PAIRING_KEY_TTL_MS).toISOString(),
+    });
     await this.persist();
     this.broadcast('session-updated', { session: this.publicSession(session) });
     return this.publicSession(session);
@@ -288,7 +344,11 @@ export class LocalBackendStore {
     return this.publicSession(session);
   }
 
-  // Receiver (desktop) accepts the pending connect request → session becomes paired.
+  // Receiver (desktop) accepts the pending connect request. Per Flow 2.1, this
+  // only advances to `pin-required` — the AEAD session key is NOT derived until
+  // the phone passes PIN verification. We pre-compute the shared secret here so
+  // pin-verify can compare SAS without redoing ECDH, but the AEAD key is held
+  // back until verifyPin succeeds.
   async acceptSession(sessionId, input = {}) {
     const session = this.requireSession(sessionId);
     if (session.state !== SESSION_STATES.awaitingAccept || !session.pendingRequest) {
@@ -299,51 +359,176 @@ export class LocalBackendStore {
     const peer = session.pendingRequest.peer;
     const remotePublicKey = session.pendingRequest.remotePublicKey;
 
+    if (!remotePublicKey) {
+      throw httpError(400, 'peer public key is required to accept the session');
+    }
+
+    const pairingKey = this.pairingKeys.get(sessionId);
+    if (!pairingKey?.privateKey) {
+      throw httpError(409, 'pairing keypair is unavailable for this session');
+    }
+
+    const sharedSecret = await deriveSharedSecret({
+      privateKey: pairingKey.privateKey,
+      remotePublicKey,
+    });
+    const expectedPin = await derivePinCode(sharedSecret, sessionId);
+
     session.peerDevice = peer;
-    session.pairing.verifiedAt = now;
     session.pairing.acceptedAt = now;
     session.pairing.encrypted = false;
-    session.state = SESSION_STATES.paired;
+    session.pairing.attemptsRemaining = MAX_PIN_ATTEMPTS;
+    session.state = SESSION_STATES.pinRequired;
     session.updatedAt = now;
     session.pendingRequest = null;
-
-    if (remotePublicKey) {
-      const pairingKey = this.pairingKeys.get(sessionId);
-      if (pairingKey?.privateKey) {
-        const sessionSecret = await deriveSessionSecret({
-          privateKey: pairingKey.privateKey,
-          remotePublicKey,
-          sessionId,
-        });
-        this.sessionSecrets.set(sessionId, sessionSecret);
-        session.pairing.encrypted = true;
-      }
-    }
-
-    // Track in known devices for reconnect feature
-    if (peer.fingerprint) {
-      this.knownDevices.set(peer.fingerprint, {
-        fingerprint: peer.fingerprint,
-        name: peer.name,
-        platform: peer.platform,
-        icon: peer.icon,
-        lastSeenAt: now,
-      });
-      if (input.trust) {
-        this.trustedDevices.set(peer.fingerprint, {
-          fingerprint: peer.fingerprint,
-          name: peer.name,
-          platform: peer.platform,
-          trustedAt: now,
-          autoAccept: true,
-        });
-      }
-    }
+    session.pinChallenge = {
+      expectedPin,
+      sharedSecret: Buffer.from(sharedSecret).toString('base64'),
+      remotePublicKey,
+      attempts: 0,
+      attemptsRemaining: MAX_PIN_ATTEMPTS,
+      issuedAt: now,
+      trustOnSuccess: Boolean(input.trust),
+    };
 
     session.summary = this.buildSummary(session);
     await this.persist();
-    this.broadcast('session-paired', { session: this.publicSession(session) });
+    this.broadcast('pin-required', {
+      sessionId: session.id,
+      attemptsRemaining: MAX_PIN_ATTEMPTS,
+      expiresAt: session.expiresAt ?? null,
+    });
+    this.broadcast('session-updated', { session: this.publicSession(session) });
     return this.publicSession(session);
+  }
+
+  // Verify the 6-digit SAS PIN supplied by the phone. Constant-time compare. On
+  // MAX_PIN_ATTEMPTS-th failure the session is locked: keypair is zeroed,
+  // session marked `locked`, and a `session-locked` SSE event is broadcast.
+  async verifyPin(sessionId, input = {}) {
+    const session = this.requireSession(sessionId);
+    if (session.state !== SESSION_STATES.pinRequired || !session.pinChallenge) {
+      throw httpError(409, 'session is not awaiting PIN verification');
+    }
+
+    const candidate = typeof input.pin === 'string' ? input.pin.trim() : '';
+    if (!/^\d{6}$/.test(candidate)) {
+      throw httpError(400, 'pin must be a 6-digit code');
+    }
+    const deviceFingerprint = sanitizeText(input.deviceFingerprint);
+    if (!deviceFingerprint) {
+      throw httpError(400, 'deviceFingerprint is required');
+    }
+
+    const challenge = session.pinChallenge;
+    const expectedBuf = Buffer.from(challenge.expectedPin, 'utf8');
+    const candidateBuf = Buffer.from(candidate, 'utf8');
+    const matched = expectedBuf.length === candidateBuf.length
+      && timingSafeEqual(expectedBuf, candidateBuf);
+
+    if (matched) {
+      const sharedSecret = new Uint8Array(Buffer.from(challenge.sharedSecret, 'base64'));
+      const sessionSecret = await deriveSessionSecret({
+        sharedSecret,
+        sessionId,
+        // privateKey/remotePublicKey unused when sharedSecret provided
+        privateKey: null,
+        remotePublicKey: null,
+      });
+      this.sessionSecrets.set(sessionId, sessionSecret);
+      zeroBuffer(sharedSecret);
+
+      const now = new Date().toISOString();
+      session.pairing.verifiedAt = now;
+      session.pairing.encrypted = true;
+      session.pairing.attemptsRemaining = MAX_PIN_ATTEMPTS;
+      session.state = SESSION_STATES.paired;
+      session.updatedAt = now;
+
+      const peer = session.peerDevice;
+      if (peer?.fingerprint) {
+        this.knownDevices.set(peer.fingerprint, {
+          fingerprint: peer.fingerprint,
+          name: peer.name,
+          platform: peer.platform,
+          icon: peer.icon,
+          lastSeenAt: now,
+        });
+        if (challenge.trustOnSuccess) {
+          this.trustedDevices.set(peer.fingerprint, {
+            fingerprint: peer.fingerprint,
+            name: peer.name,
+            platform: peer.platform,
+            trustedAt: now,
+            autoAccept: true,
+          });
+        }
+      }
+
+      session.pinChallenge = null;
+      session.summary = this.buildSummary(session);
+      await this.persist();
+      this.broadcast('session-paired', { session: this.publicSession(session) });
+      return {
+        ok: true,
+        session: this.publicSession(session),
+        attemptsRemaining: MAX_PIN_ATTEMPTS,
+      };
+    }
+
+    challenge.attempts += 1;
+    const attemptsRemaining = Math.max(0, MAX_PIN_ATTEMPTS - challenge.attempts);
+    challenge.attemptsRemaining = attemptsRemaining;
+    session.pairing.attempts = challenge.attempts;
+    session.pairing.attemptsRemaining = attemptsRemaining;
+    session.updatedAt = new Date().toISOString();
+
+    if (attemptsRemaining === 0) {
+      const lockedAt = session.updatedAt;
+      this.zeroPairingKeys(sessionId);
+      this.sessionSecrets.delete(sessionId);
+      session.state = SESSION_STATES.locked;
+      session.closedAt = lockedAt;
+      session.closedReason = 'pin-attempts-exhausted';
+      session.pinChallenge = null;
+      session.pairing.encrypted = false;
+      session.summary = this.buildSummary(session);
+      await this.persist();
+      this.broadcast('session-locked', {
+        sessionId,
+        reason: 'pin-attempts-exhausted',
+        lockedAt,
+      });
+      this.broadcast('session-updated', { session: this.publicSession(session) });
+      return {
+        ok: false,
+        reason: 'locked',
+        attemptsRemaining: 0,
+      };
+    }
+
+    await this.persist();
+    this.broadcast('pin-mismatch', { sessionId, attemptsRemaining });
+    return {
+      ok: false,
+      reason: 'mismatch',
+      attemptsRemaining,
+    };
+  }
+
+  // Overwrite the in-memory X25519 private key for the given session and drop
+  // it from the map so it can't be reused. Per spec Flow 4.1 the keypair is
+  // "deleted" — we also zero the publicKey string buffer for symmetry.
+  zeroPairingKeys(sessionId) {
+    const entry = this.pairingKeys.get(sessionId);
+    if (!entry) return;
+    // CryptoKey is opaque (we can't overwrite its private bytes from JS land)
+    // but dropping the reference makes it unreachable. The persisted JWK is
+    // overwritten on the next persist() because exportPairingKeysForPersistence
+    // skips entries that are no longer in the map.
+    this.pairingKeys.delete(sessionId);
+    entry.privateKey = null;
+    entry.publicKey = '';
   }
 
   async declineSession(sessionId, input = {}) {
@@ -787,8 +972,9 @@ export class LocalBackendStore {
   getDashboard() {
     this.pruneExpiredSessions();
     const sessions = this.sortedSessions();
-    const activeSessions = sessions.filter((s) => !['closed', 'completed', 'failed'].includes(s.state));
-    const history = sessions.filter((s) => ['closed', 'completed', 'failed'].includes(s.state));
+    const terminalStates = ['closed', 'completed', 'failed', 'locked'];
+    const activeSessions = sessions.filter((s) => !terminalStates.includes(s.state));
+    const history = sessions.filter((s) => terminalStates.includes(s.state));
     const totals = sessions.reduce(
       (acc, s) => {
         acc.sessions += 1;
@@ -798,6 +984,7 @@ export class LocalBackendStore {
         if (s.state === SESSION_STATES.transferring) acc.transferring += 1;
         if (s.state === SESSION_STATES.completed) acc.completed += 1;
         if (s.state === SESSION_STATES.awaitingAccept) acc.pending += 1;
+        if (s.state === SESSION_STATES.pinRequired) acc.pending += 1;
         return acc;
       },
       { sessions: 0, files: 0, bytes: 0, paired: 0, transferring: 0, completed: 0, pending: 0 },
@@ -821,7 +1008,7 @@ export class LocalBackendStore {
   getHistory(query = '') {
     const normalized = sanitizeSearchQuery(query);
     return this.sortedSessions()
-      .filter((s) => ['closed', 'completed', 'failed'].includes(s.state))
+      .filter((s) => ['closed', 'completed', 'failed', 'locked'].includes(s.state))
       .filter((s) => this.matchesHistoryQuery(s, normalized))
       .map((s) => this.sessionHistoryEntry(s));
   }
@@ -829,8 +1016,9 @@ export class LocalBackendStore {
   // ─── Persistence ──────────────────────────────────────────
 
   async persist() {
+    const pairingKeysSnapshot = await this.exportPairingKeysForPersistence();
     const snapshot = {
-      version: 2,
+      version: 3,
       settings: this.settings,
       clipboard: this.clipboard,
       sessions: Object.fromEntries(
@@ -840,9 +1028,32 @@ export class LocalBackendStore {
       trustedDevices: Object.fromEntries(this.trustedDevices),
       knownDevices: Object.fromEntries(this.knownDevices),
       guestShares: Object.fromEntries(this.guestShares),
+      pairingKeys: pairingKeysSnapshot,
       updatedAt: new Date().toISOString(),
     };
     await writeJson(this.stateFile, snapshot);
+  }
+
+  async exportPairingKeysForPersistence() {
+    const out = {};
+    const now = Date.now();
+    for (const [sessionId, entry] of this.pairingKeys.entries()) {
+      if (!entry?.privateKey) continue;
+      const expiresAt = Date.parse(entry.expiresAt ?? '');
+      if (Number.isFinite(expiresAt) && expiresAt < now) continue;
+      try {
+        const jwk = await exportPrivateKeyJwk(entry.privateKey);
+        out[sessionId] = {
+          publicKey: entry.publicKey,
+          privateKeyJwk: jwk,
+          createdAt: entry.createdAt ?? new Date(now).toISOString(),
+          expiresAt: entry.expiresAt ?? new Date(now + PAIRING_KEY_TTL_MS).toISOString(),
+        };
+      } catch {
+        // non-extractable or otherwise unserializable — skip silently
+      }
+    }
+    return out;
   }
 
   rebuildFileIndex() {
@@ -905,6 +1116,7 @@ export class LocalBackendStore {
   // ─── Public projections ───────────────────────────────────
 
   publicSession(session) {
+    const challenge = session.pinChallenge ?? null;
     return structuredClone({
       ...session,
       localDevice: this.publicDevice(session.localDevice, 'desktop'),
@@ -919,11 +1131,16 @@ export class LocalBackendStore {
         encrypted: Boolean(session.pairing.encrypted),
         verifiedAt: session.pairing.verifiedAt ?? null,
         acceptedAt: session.pairing.acceptedAt ?? null,
+        attemptsRemaining: session.pairing.attemptsRemaining ?? MAX_PIN_ATTEMPTS,
+        // Only present while session is in `pin-required` — the desktop UI
+        // shows this for the human to read aloud / type on the phone.
+        pin: session.state === SESSION_STATES.pinRequired && challenge ? challenge.expectedPin : null,
       },
       pendingRequest: session.pendingRequest ?? null,
       pendingTransfers: session.pendingTransfers ?? [],
       summary: this.buildSummary(session),
       queue: this.buildQueue(session),
+      pinChallenge: undefined,
       files: {
         'desktop-to-phone': session.files['desktop-to-phone'].map((f) => this.publicFile(f)),
         'phone-to-desktop': session.files['phone-to-desktop'].map((f) => this.publicFile(f)),
