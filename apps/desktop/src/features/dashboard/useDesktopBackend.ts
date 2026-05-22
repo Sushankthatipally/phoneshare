@@ -293,6 +293,7 @@ export function useDesktopBackend() {
     updateClipboard,
     updateSettings,
     uploadFile: client.uploadFile.bind(client),
+    peerStorage: client.peerStorage.bind(client),
   };
 }
 

@@ -6,6 +6,12 @@ import { formatBytes } from '@dropbeam/protocol';
 import { Modal } from '../components/Modal.js';
 import type { DesktopBackendState } from '../features/dashboard/useDesktopBackend.js';
 
+type PeerStorageState =
+  | { status: 'idle' }
+  | { status: 'checking' }
+  | { status: 'ok'; freeBytes: number; totalBytes: number; reportedAt: string }
+  | { status: 'unknown' };
+
 type SendTargetState = {
   message: string;
   progress: number;
@@ -36,6 +42,7 @@ export function Send({
   const [folderMode, setFolderMode] = useState<FolderMode>('preserve');
   const [largeFilePrompt, setLargeFilePrompt] = useState(false);
   const [sendToSelf, setSendToSelf] = useState(false);
+  const [peerStorage, setPeerStorage] = useState<PeerStorageState>({ status: 'idle' });
 
   useEffect(() => {
     if (folderInputRef.current) {
@@ -59,6 +66,44 @@ export function Send({
   useEffect(() => {
     setSelectedSessionIds((current) => current.filter((id) => verifiedSessions.some((s) => s.id === id)));
   }, [verifiedSessions]);
+
+  const targetPeer = useMemo(() => {
+    const chosen = verifiedSessions.find((s) => selectedSessionIds.includes(s.id)) ?? verifiedSessions[0];
+    if (!chosen) return null;
+    const fingerprint = chosen.peerDevice?.fingerprint ?? null;
+    return {
+      name: chosen.peerDevice?.name ?? 'paired device',
+      fingerprint,
+    };
+  }, [verifiedSessions, selectedSessionIds]);
+
+  useEffect(() => {
+    if (!largeFilePrompt) return;
+    if (!targetPeer?.fingerprint) {
+      setPeerStorage({ status: 'unknown' });
+      return;
+    }
+    let cancelled = false;
+    setPeerStorage({ status: 'checking' });
+    void backend.peerStorage(targetPeer.fingerprint).then((response) => {
+      if (cancelled) return;
+      if (response.ok) {
+        setPeerStorage({
+          status: 'ok',
+          freeBytes: response.report.freeBytes,
+          totalBytes: response.report.totalBytes,
+          reportedAt: response.report.reportedAt,
+        });
+      } else {
+        setPeerStorage({ status: 'unknown' });
+      }
+    }).catch(() => {
+      if (!cancelled) setPeerStorage({ status: 'unknown' });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [largeFilePrompt, targetPeer?.fingerprint, backend]);
 
   return (
     <>
@@ -290,10 +335,20 @@ export function Send({
       {largeFilePrompt ? (
         <Modal onClose={() => setLargeFilePrompt(false)}>
           <div className="modal__header">
-            <span className="modal__step">Large file</span>
-            <h2 className="modal__title">{formatBytes(queuedBytes)} queued — heads up</h2>
+            <span className="modal__step">Large transfer</span>
+            <h2 className="modal__title">{formatBytes(queuedBytes)} queued — confirm before sending</h2>
           </div>
           <div className="list">
+            <div className="row" style={{ gridTemplateColumns: '1fr' }}>
+              <div className="row__copy">
+                <strong>This transfer is {formatBytes(queuedBytes)}</strong>
+                <span>
+                  {targetPeer
+                    ? renderStorageCopy(peerStorage, targetPeer.name, queuedBytes)
+                    : 'No paired device selected yet — pick a target before sending.'}
+                </span>
+              </div>
+            </div>
             <div className="row" style={{ gridTemplateColumns: '1fr' }}>
               <div className="row__copy">
                 <strong>USB cable: ~{estimateTime(queuedBytes, 180 * 1024 * 1024)}</strong>
@@ -303,7 +358,7 @@ export function Send({
             <div className="row" style={{ gridTemplateColumns: '1fr' }}>
               <div className="row__copy">
                 <strong>WiFi 6: ~{estimateTime(queuedBytes, 96 * 1024 * 1024)}</strong>
-                <span>Default lane. Receiver phone storage will be checked first.</span>
+                <span>Default lane.</span>
               </div>
             </div>
             <div className="row" style={{ gridTemplateColumns: '1fr' }}>
@@ -314,8 +369,17 @@ export function Send({
             </div>
           </div>
           <div className="modal__actions">
-            <Button onClick={() => setLargeFilePrompt(false)} variant="primary">
-              Proceed
+            <Button onClick={() => setLargeFilePrompt(false)} variant="ghost">
+              Cancel
+            </Button>
+            <Button
+              disabled={
+                peerStorage.status === 'ok' && peerStorage.freeBytes < queuedBytes
+              }
+              onClick={() => setLargeFilePrompt(false)}
+              variant="primary"
+            >
+              {peerStorage.status === 'unknown' ? 'Proceed anyway' : 'Continue'}
             </Button>
           </div>
         </Modal>
@@ -485,6 +549,20 @@ function getRelativePath(file: File) {
 function stripPath(file: File) {
   const flat = new File([file], file.name, { type: file.type, lastModified: file.lastModified });
   return flat;
+}
+
+function renderStorageCopy(state: PeerStorageState, peerName: string, queuedBytes: number) {
+  if (state.status === 'checking') return `Checking free space on ${peerName}…`;
+  if (state.status === 'ok') {
+    if (state.freeBytes < queuedBytes) {
+      return `${peerName} has ${formatBytes(state.freeBytes)} free — not enough for ${formatBytes(queuedBytes)}.`;
+    }
+    return `${peerName} has ${formatBytes(state.freeBytes)} free of ${formatBytes(state.totalBytes)} — enough room.`;
+  }
+  if (state.status === 'unknown') {
+    return `Free space on ${peerName}: unknown — proceed anyway?`;
+  }
+  return `Connected device: ${peerName}.`;
 }
 
 function estimateTime(bytes: number, bytesPerSecond: number) {

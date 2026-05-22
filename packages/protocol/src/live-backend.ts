@@ -192,10 +192,22 @@ export interface BackendSettings {
   autoCloseAfterDownload: boolean;
   autoAcceptTrusted: boolean;
   onboardingComplete: boolean;
+  clipboardSyncEnabled: boolean;
   watchFolders: WatchFolderConfig[];
   createdAt: string;
   updatedAt: string;
 }
+
+export interface PeerStorageReport {
+  fingerprint: string;
+  freeBytes: number;
+  totalBytes: number;
+  reportedAt: string;
+}
+
+export type PeerStorageResponse =
+  | { ok: true; report: PeerStorageReport }
+  | { ok: false; error: 'unknown' };
 
 export interface WatchFolderConfig {
   id: string;
@@ -335,7 +347,35 @@ export interface UpdateSettingsRequest {
   autoCloseAfterDownload?: boolean;
   autoAcceptTrusted?: boolean;
   onboardingComplete?: boolean;
+  clipboardSyncEnabled?: boolean;
   watchFolders?: WatchFolderConfig[];
+}
+
+export interface PeerStorageUpdateRequest {
+  fingerprint: string;
+  freeBytes: number;
+  totalBytes: number;
+}
+
+export interface BackendEventMap {
+  'snapshot': { dashboard: DashboardResponse };
+  'session-created': { session: LiveSessionRecord };
+  'session-updated': { session: LiveSessionRecord };
+  'session-paired': { session: LiveSessionRecord };
+  'session-connect-requested': { session: LiveSessionRecord };
+  'session-declined': { session: LiveSessionRecord };
+  'session-closed': { session: LiveSessionRecord };
+  'settings-updated': { settings: BackendSettings };
+  'clipboard-updated': { clipboard: ClipboardState };
+  'upload-started': { upload: UploadSessionRecord };
+  'upload-progress': { upload: UploadSessionRecord };
+  'file-uploaded': { session: LiveSessionRecord; file: StoredFileRecord };
+  'file-downloaded': { session: LiveSessionRecord; file: StoredFileRecord };
+  'transfer-requested': { sessionId: string; batch: PendingTransferBatch };
+  'transfer-accepted': { sessionId: string; batchId: string; fileIds: string[] };
+  'transfer-declined': { sessionId: string; batchId: string; reason: string | null };
+  'trusted-updated': { trustedDevices: TrustedDeviceRecord[] };
+  'peer-storage-updated': { report: PeerStorageReport };
 }
 
 export interface UpdateClipboardRequest {

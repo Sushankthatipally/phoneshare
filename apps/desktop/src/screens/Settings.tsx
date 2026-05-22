@@ -16,6 +16,7 @@ export function Settings({ backend }: { backend: DesktopBackendState }) {
   const [connectionMode, setConnectionMode] = useState<'auto' | 'wifi' | 'usb'>(backend.settings?.connectionMode ?? 'auto');
   const [autoClose, setAutoClose] = useState(backend.settings?.autoCloseAfterDownload ?? false);
   const [autoAcceptTrusted, setAutoAcceptTrusted] = useState(backend.settings?.autoAcceptTrusted ?? false);
+  const [clipboardSyncEnabled, setClipboardSyncEnabled] = useState(backend.settings?.clipboardSyncEnabled ?? false);
 
   useEffect(() => {
     if (!backend.settings) return;
@@ -25,6 +26,7 @@ export function Settings({ backend }: { backend: DesktopBackendState }) {
     setConnectionMode(backend.settings.connectionMode);
     setAutoClose(backend.settings.autoCloseAfterDownload);
     setAutoAcceptTrusted(backend.settings.autoAcceptTrusted);
+    setClipboardSyncEnabled(backend.settings.clipboardSyncEnabled);
   }, [backend.settings]);
 
   return (
@@ -53,6 +55,7 @@ export function Settings({ backend }: { backend: DesktopBackendState }) {
                 preferredMode: connectionMode === 'usb' ? 'usb' : 'wifi',
                 autoCloseAfterDownload: autoClose,
                 autoAcceptTrusted,
+                clipboardSyncEnabled,
               });
             }}
           >
@@ -101,6 +104,15 @@ export function Settings({ backend }: { backend: DesktopBackendState }) {
                 type="checkbox"
               />
               Auto-accept incoming connections from trusted devices
+            </label>
+
+            <label className="checkbox">
+              <input
+                checked={clipboardSyncEnabled}
+                onChange={(e) => setClipboardSyncEnabled(e.target.checked)}
+                type="checkbox"
+              />
+              Clipboard sync — mirror what you copy here to paired phones
             </label>
 
             <div className="topbar__actions">

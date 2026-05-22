@@ -13,6 +13,8 @@ import type {
   LiveTransferDirection,
   PairSessionRequest,
   PendingTransferBatch,
+  PeerStorageResponse,
+  PeerStorageUpdateRequest,
   SecureDownloadPayload,
   StoredFileRecord,
   TrustedDeviceRecord,
@@ -82,6 +84,37 @@ export class DropbeamBackendClient {
       body: JSON.stringify(input),
       headers: { 'Content-Type': 'application/json' },
     }).then((response) => response.clipboard);
+  }
+
+  peerStorage(fingerprint: string): Promise<PeerStorageResponse> {
+    const controller = new AbortController();
+    const timeoutHandle = setTimeout(() => controller.abort(), 8000);
+    return fetch(`${this.origin}/api/peers/${encodeURIComponent(fingerprint)}/storage`, {
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        clearTimeout(timeoutHandle);
+        const payload = (await response.json()) as PeerStorageResponse;
+        return payload;
+      })
+      .catch((error) => {
+        clearTimeout(timeoutHandle);
+        if (error instanceof Error && error.name === 'AbortError') {
+          return { ok: false, error: 'unknown' } as const;
+        }
+        throw error;
+      });
+  }
+
+  reportPeerStorage(input: PeerStorageUpdateRequest) {
+    return this.request<{ report: { fingerprint: string; freeBytes: number; totalBytes: number; reportedAt: string } }>(
+      '/api/peers/storage',
+      {
+        method: 'POST',
+        body: JSON.stringify(input),
+        headers: { 'Content-Type': 'application/json' },
+      },
+    ).then((response) => response.report);
   }
 
   createSession(input: CreateSessionRequest & { origin?: string; deviceName?: string } = {}) {
@@ -399,6 +432,7 @@ export class DropbeamBackendClient {
     source.addEventListener('upload-progress', handler as EventListener);
     source.addEventListener('file-uploaded', handler as EventListener);
     source.addEventListener('file-downloaded', handler as EventListener);
+    source.addEventListener('peer-storage-updated', handler as EventListener);
     source.onmessage = handler;
 
     return () => {
