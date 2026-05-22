@@ -2,6 +2,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod notify_shell;
+mod shell_integration;
+mod usb_android;
+mod usb_ios;
 mod watcher;
 
 use std::{
@@ -13,6 +16,7 @@ use std::{
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_shell::{
     process::{CommandChild, CommandEvent},
     ShellExt,
@@ -46,6 +50,23 @@ fn clear_pending_send_paths(state: State<'_, PendingSend>) {
     }
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PickFolderResult {
+    path: Option<String>,
+}
+
+#[tauri::command]
+async fn pick_folder(app: AppHandle) -> PickFolderResult {
+    let (tx, rx) = tokio::sync::oneshot::channel::<Option<String>>();
+    app.dialog().file().pick_folder(move |selected| {
+        let path = selected.and_then(|p| p.into_path().ok().map(|pb| pb.to_string_lossy().into_owned()));
+        let _ = tx.send(path);
+    });
+    let path = rx.await.ok().flatten();
+    PickFolderResult { path }
+}
+
 fn main() {
     install_tracing();
 
@@ -64,10 +85,17 @@ fn main() {
             watcher::stop_watch_folder,
             watcher::list_files_in_folder,
             notify_shell::system_notify,
-            notify_shell::register_context_menu,
-            notify_shell::unregister_context_menu,
+            shell_integration::register_context_menu,
+            shell_integration::unregister_context_menu,
+            usb_android::usb_android_status,
+            usb_android::usb_android_ensure_tunnel,
+            usb_android::usb_android_stop_tunnel,
+            usb_ios::usb_ios_status,
+            usb_ios::usb_ios_ensure_tunnel,
+            usb_ios::usb_ios_stop_tunnel,
             get_pending_send_paths,
             clear_pending_send_paths,
+            pick_folder,
         ])
         .setup(move |app| {
             spawn_backend_sidecar(app)?;

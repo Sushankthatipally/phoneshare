@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 
-import { Cable, RefreshCw, Smartphone, Users, Wifi } from 'lucide-react';
+import { Cable, RefreshCw, Users } from 'lucide-react';
 
 import { Badge, Button, QrCode } from '@dropbeam/shared-ui';
 
@@ -8,6 +8,12 @@ import { Modal } from './Modal.js';
 import { Countdown } from './Countdown.js';
 import type { ConnectionChoice } from './ConnectionPicker.js';
 import type { DesktopBackendState } from '../features/dashboard/useDesktopBackend.js';
+import {
+  isTauri,
+  usbAndroidEnsureTunnel,
+  usbAndroidStatus,
+  type AndroidUsbStatus,
+} from '../lib/tauri.js';
 
 interface Props {
   backend: DesktopBackendState;
@@ -15,10 +21,14 @@ interface Props {
   onClose: () => void;
 }
 
+type UsbPlatform = 'android' | 'ios';
+
 export function ConnectionScreen({ backend, choice, onClose }: Props) {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [hotspot, setHotspot] = useState<{ ssid: string; password: string } | null>(null);
-  const [usbProbeAttempts, setUsbProbeAttempts] = useState(0);
+  const [usbPlatform, setUsbPlatform] = useState<UsbPlatform>('android');
+  const [androidStatus, setAndroidStatus] = useState<AndroidUsbStatus | null>(null);
+  const [tunnelError, setTunnelError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -44,17 +54,17 @@ export function ConnectionScreen({ backend, choice, onClose }: Props) {
 
   const session = backend.sessions.find((s) => s.id === sessionId);
 
-  useEffect(() => {
-    if (choice !== 'usb') return;
-    const handle = setInterval(() => setUsbProbeAttempts((n) => n + 1), 2000);
-    return () => clearInterval(handle);
-  }, [choice]);
-
   return (
     <Modal onClose={onClose} size="lg">
       <div className="modal__header">
         <span className="modal__step">
-          {choice === 'wifi' ? 'Same WiFi' : choice === 'usb' ? 'USB Cable' : choice === 'hotspot' ? 'Hotspot' : 'Multi-device'}
+          {choice === 'wifi'
+            ? 'Same WiFi'
+            : choice === 'usb'
+              ? 'USB Cable'
+              : choice === 'hotspot'
+                ? 'Hotspot'
+                : 'Multi-device'}
         </span>
         <h2 className="modal__title">
           {choice === 'wifi' && 'Scan this QR with your phone'}
@@ -101,32 +111,30 @@ export function ConnectionScreen({ backend, choice, onClose }: Props) {
       )}
 
       {choice === 'usb' && (
-        <div className="connection">
-          <Cable size={48} strokeWidth={1.6} />
-          <p className="card__copy">
-            Plug your phone in with a cable that supports data transfer (not charge-only).
-          </p>
-          <span className="connection__pulse">
-            Polling for USB devices… attempt {usbProbeAttempts + 1}
-          </span>
-          {usbProbeAttempts >= 5 ? (
-            <Badge tone="amber">
-              No device found. Native USB detection (ADB / usbmuxd) needs to be wired in. Switch to WiFi to continue.
-            </Badge>
-          ) : null}
-          <div className="topbar__actions">
-            <Button onClick={onClose} variant="ghost">
-              Cancel
-            </Button>
-          </div>
-        </div>
+        <UsbTab
+          platform={usbPlatform}
+          onPlatformChange={setUsbPlatform}
+          androidStatus={androidStatus}
+          setAndroidStatus={setAndroidStatus}
+          tunnelError={tunnelError}
+          setTunnelError={setTunnelError}
+          onCancel={onClose}
+        />
       )}
 
       {choice === 'hotspot' && (
         <div className="connection">
           {session ? (
             <>
-              <QrCode size={196} value={JSON.stringify({ kind: 'hotspot', ssid: hotspot?.ssid, password: hotspot?.password, pair: session.pairing.ticket.qrValue })} />
+              <QrCode
+                size={196}
+                value={JSON.stringify({
+                  kind: 'hotspot',
+                  ssid: hotspot?.ssid,
+                  password: hotspot?.password,
+                  pair: session.pairing.ticket.qrValue,
+                })}
+              />
               <div className="connection__credentials">
                 <div className="credential">
                   <span>SSID</span>
@@ -176,6 +184,175 @@ export function ConnectionScreen({ backend, choice, onClose }: Props) {
         </Button>
       </div>
     </Modal>
+  );
+}
+
+interface UsbTabProps {
+  platform: UsbPlatform;
+  onPlatformChange: (platform: UsbPlatform) => void;
+  androidStatus: AndroidUsbStatus | null;
+  setAndroidStatus: (status: AndroidUsbStatus) => void;
+  tunnelError: string | null;
+  setTunnelError: (error: string | null) => void;
+  onCancel: () => void;
+}
+
+function UsbTab({
+  platform,
+  onPlatformChange,
+  androidStatus,
+  setAndroidStatus,
+  tunnelError,
+  setTunnelError,
+  onCancel,
+}: UsbTabProps) {
+  const tauriAvailable = isTauri();
+  const tunnelEstablished =
+    androidStatus?.state === 'ready' && tunnelError === null && platform === 'android';
+
+  const poll = useCallback(async () => {
+    if (platform !== 'android') return;
+    const status = await usbAndroidStatus();
+    setAndroidStatus(status);
+    if (status.state === 'ready') {
+      const tunnel = await usbAndroidEnsureTunnel();
+      if (!tunnel.ok) setTunnelError(tunnel.error ?? 'Failed to establish adb reverse tunnel');
+      else setTunnelError(null);
+    }
+  }, [platform, setAndroidStatus, setTunnelError]);
+
+  useEffect(() => {
+    if (platform !== 'android') return;
+    let cancelled = false;
+    void poll();
+    const handle = setInterval(() => {
+      if (!cancelled) void poll();
+    }, 2000);
+    return () => {
+      cancelled = true;
+      clearInterval(handle);
+    };
+  }, [platform, poll]);
+
+  return (
+    <div className="connection">
+      <div className="usb-tabs" role="tablist">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={platform === 'android'}
+          className={`tab${platform === 'android' ? ' tab--active' : ''}`}
+          onClick={() => onPlatformChange('android')}
+        >
+          Android
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={platform === 'ios'}
+          className={`tab${platform === 'ios' ? ' tab--active' : ''}`}
+          onClick={() => onPlatformChange('ios')}
+        >
+          iOS
+        </button>
+      </div>
+
+      {platform === 'android' ? (
+        <AndroidUsbView status={androidStatus} tunnelError={tunnelError} tauriAvailable={tauriAvailable} tunnelOk={tunnelEstablished} />
+      ) : (
+        <IosUsbView />
+      )}
+
+      <div className="topbar__actions">
+        <Button onClick={onCancel} variant="ghost">
+          Cancel
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+interface AndroidUsbViewProps {
+  status: AndroidUsbStatus | null;
+  tunnelError: string | null;
+  tauriAvailable: boolean;
+  tunnelOk: boolean;
+}
+
+function AndroidUsbView({ status, tunnelError, tauriAvailable, tunnelOk }: AndroidUsbViewProps) {
+  if (!tauriAvailable) {
+    return (
+      <>
+        <Cable size={48} strokeWidth={1.6} />
+        <p className="card__copy">USB transport requires the desktop app. Open DropBeam Desktop to use a cable.</p>
+      </>
+    );
+  }
+
+  if (!status) {
+    return <span className="connection__pulse">Initialising adb…</span>;
+  }
+
+  switch (status.state) {
+    case 'absent':
+      return (
+        <>
+          <Cable size={48} strokeWidth={1.6} />
+          <p className="card__copy">Connect your Android phone with a data-transfer USB cable.</p>
+          {status.error ? <span className="connection__pulse">{status.error}</span> : <span className="connection__pulse">Polling for device…</span>}
+        </>
+      );
+    case 'detected':
+      return (
+        <>
+          <Cable size={48} strokeWidth={1.6} />
+          <p className="card__copy">{status.deviceLabel ? `${status.deviceLabel} detected.` : 'Device detected.'} Waiting for authorization…</p>
+          <span className="connection__pulse">Approve the USB debugging prompt on the phone.</span>
+        </>
+      );
+    case 'authorizing':
+      return (
+        <>
+          <Cable size={48} strokeWidth={1.6} />
+          <p className="card__copy">Authorize this computer on your phone.</p>
+          {status.deviceLabel ? <span className="connection__pulse">{status.deviceLabel}</span> : null}
+        </>
+      );
+    case 'ready':
+      return (
+        <>
+          <Cable size={48} strokeWidth={1.6} />
+          <p className="card__copy">
+            <strong>{status.deviceLabel ?? 'Android device'}</strong> ready. Tunnel on tcp:17619 active.
+          </p>
+          {tunnelError ? (
+            <span className="connection__pulse">{tunnelError}</span>
+          ) : tunnelOk ? (
+            <span className="connection__pulse">Open DropBeam on the phone to enter the PIN.</span>
+          ) : (
+            <span className="connection__pulse">Establishing adb reverse tunnel…</span>
+          )}
+        </>
+      );
+    case 'error':
+    default:
+      return (
+        <>
+          <Cable size={48} strokeWidth={1.6} />
+          <p className="card__copy">{status.error ?? 'Unknown adb error'}</p>
+        </>
+      );
+  }
+}
+
+function IosUsbView() {
+  return (
+    <>
+      <Cable size={48} strokeWidth={1.6} />
+      <p className="card__copy">
+        Connect over Wi-Fi instead — iOS USB transfer is not supported in this build.
+      </p>
+    </>
   );
 }
 

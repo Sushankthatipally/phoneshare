@@ -1,12 +1,29 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 import { Badge, Button } from '@dropbeam/shared-ui';
 import { formatBytes } from '@dropbeam/protocol';
 
 import type { DesktopBackendState } from '../features/dashboard/useDesktopBackend.js';
+import {
+  isTauri,
+  openFolderDialog,
+  registerContextMenu,
+  startWatchFolder,
+  stopWatchFolder,
+  unregisterContextMenu,
+  type ShellIntegrationResult,
+} from '../lib/tauri.js';
 
 type DeviceIcon = 'desktop' | 'laptop' | 'phone' | 'tablet';
-type Tab = 'identity' | 'trusted' | 'watch' | 'benchmark';
+type Tab = 'identity' | 'trusted' | 'watch' | 'shell' | 'benchmark';
+
+const TABS: Array<{ id: Tab; label: string }> = [
+  { id: 'identity', label: 'Identity' },
+  { id: 'trusted', label: 'Trusted devices' },
+  { id: 'watch', label: 'Watch folders' },
+  { id: 'shell', label: 'Shell integration' },
+  { id: 'benchmark', label: 'Benchmark' },
+];
 
 export function Settings({ backend }: { backend: DesktopBackendState }) {
   const [tab, setTab] = useState<Tab>('identity');
@@ -30,9 +47,14 @@ export function Settings({ backend }: { backend: DesktopBackendState }) {
   return (
     <>
       <div className="tabs">
-        {(['identity', 'trusted', 'watch', 'benchmark'] as Tab[]).map((t) => (
-          <button key={t} className={`tab${tab === t ? ' tab--active' : ''}`} onClick={() => setTab(t)} type="button">
-            {t === 'identity' ? 'Identity' : t === 'trusted' ? 'Trusted devices' : t === 'watch' ? 'Watch folders' : 'Benchmark'}
+        {TABS.map((t) => (
+          <button
+            key={t.id}
+            className={`tab${tab === t.id ? ' tab--active' : ''}`}
+            onClick={() => setTab(t.id)}
+            type="button"
+          >
+            {t.label}
           </button>
         ))}
       </div>
@@ -171,15 +193,104 @@ export function Settings({ backend }: { backend: DesktopBackendState }) {
 
       {tab === 'watch' ? <WatchFoldersSection backend={backend} /> : null}
 
+      {tab === 'shell' ? <ShellIntegrationSection /> : null}
+
       {tab === 'benchmark' ? <BenchmarkSection backend={backend} /> : null}
     </>
   );
 }
 
 function WatchFoldersSection({ backend }: { backend: DesktopBackendState }) {
-  const [folderPath, setFolderPath] = useState('');
+  const folders = useMemo(() => backend.settings?.watchFolders ?? [], [backend.settings]);
   const [destination, setDestination] = useState(backend.knownDevices[0]?.fingerprint ?? '');
-  const folders = backend.settings?.watchFolders ?? [];
+  const [pickedPath, setPickedPath] = useState<string>('');
+  const [adding, setAdding] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const tauriAvailable = isTauri();
+
+  useEffect(() => {
+    if (!destination && backend.knownDevices[0]) setDestination(backend.knownDevices[0].fingerprint);
+  }, [backend.knownDevices, destination]);
+
+  // Register watchers for any folders that came back from the backend the
+  // first time this tab mounts. start_watch_folder is idempotent by id so
+  // re-running is safe.
+  useEffect(() => {
+    if (!tauriAvailable) return;
+    let cancelled = false;
+    (async () => {
+      for (const folder of folders) {
+        if (cancelled) break;
+        await startWatchFolder({
+          id: folder.id,
+          path: folder.path,
+          destinationFingerprint: folder.destinationFingerprint,
+        });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // We want to re-run only when the folder set actually changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [folders.map((f) => f.id).join('|')]);
+
+  const pickFolder = async () => {
+    setError(null);
+    const path = await openFolderDialog();
+    if (!path) return;
+    setPickedPath(path);
+  };
+
+  const addFolder = async () => {
+    setError(null);
+    const target = backend.knownDevices.find((d) => d.fingerprint === destination);
+    if (!target || !pickedPath) {
+      setError('Pick a folder and a destination device first.');
+      return;
+    }
+    setAdding(true);
+    const id = crypto.randomUUID();
+    try {
+      const ok = await startWatchFolder({
+        id,
+        path: pickedPath,
+        destinationFingerprint: destination,
+      });
+      if (!ok && tauriAvailable) {
+        setError('Failed to start watcher. Check folder permissions.');
+        return;
+      }
+      const nextFolders = [
+        ...folders,
+        {
+          id,
+          path: pickedPath,
+          destinationFingerprint: destination,
+          destinationLabel: target.name,
+          fileTypes: 'all' as const,
+          trigger: 'on-connect' as const,
+        },
+      ];
+      await backend.updateSettings({ watchFolders: nextFolders });
+      setPickedPath('');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to add watch folder');
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  const removeFolder = async (id: string) => {
+    setError(null);
+    if (tauriAvailable) await stopWatchFolder(id);
+    await backend.updateSettings({ watchFolders: folders.filter((f) => f.id !== id) });
+  };
+
+  const updateFileTypes = async (id: string, value: 'all' | 'images') => {
+    const next = folders.map((f) => (f.id === id ? { ...f, fileTypes: value } : f));
+    await backend.updateSettings({ watchFolders: next });
+  };
 
   return (
     <section className="card">
@@ -187,18 +298,18 @@ function WatchFoldersSection({ backend }: { backend: DesktopBackendState }) {
       <h2 className="card__title">Auto-send when a phone connects</h2>
       <p className="card__copy">
         Add a folder and a destination device. When the device reconnects, anything new in the folder is sent automatically.
-        <br />
-        Actual filesystem watching needs a Tauri sidecar — UI is wired now so the configuration persists when that lands.
       </p>
 
       <div className="field">
-        <span className="field__label">Source folder path</span>
-        <input
-          className="input"
-          onChange={(e) => setFolderPath(e.target.value)}
-          placeholder="~/Desktop/ToPhone"
-          value={folderPath}
-        />
+        <span className="field__label">Source folder</span>
+        <div className="topbar__actions">
+          <Button onClick={() => void pickFolder()} variant="secondary" disabled={!tauriAvailable}>
+            Choose folder…
+          </Button>
+          <span className="card__copy" style={{ marginLeft: 8 }}>
+            {pickedPath || (tauriAvailable ? 'No folder selected' : 'Folder picker requires the desktop app')}
+          </span>
+        </div>
       </div>
 
       <div className="field">
@@ -215,54 +326,118 @@ function WatchFoldersSection({ backend }: { backend: DesktopBackendState }) {
 
       <div className="topbar__actions">
         <Button
-          disabled={!folderPath || !destination}
-          onClick={() => {
-            const target = backend.knownDevices.find((d) => d.fingerprint === destination);
-            if (!target) return;
-            const nextFolders = [
-              ...folders,
-              {
-                id: crypto.randomUUID(),
-                path: folderPath,
-                destinationFingerprint: destination,
-                destinationLabel: target.name,
-                fileTypes: 'all' as const,
-                trigger: 'on-connect' as const,
-              },
-            ];
-            void backend.updateSettings({ watchFolders: nextFolders });
-            setFolderPath('');
-          }}
+          disabled={!pickedPath || !destination || adding}
+          onClick={() => void addFolder()}
           variant="primary"
         >
-          Add watch folder
+          {adding ? 'Adding…' : 'Add watch folder'}
         </Button>
       </div>
 
+      {error ? <span className="connection__pulse">{error}</span> : null}
+
       {folders.length ? (
         <div className="list">
-          {folders.map((folder) => (
-            <div className="row" key={folder.id}>
-              <div className="row__copy">
-                <strong>{folder.path}</strong>
-                <span>
-                  → {folder.destinationLabel} · {folder.trigger.replace('-', ' ')}
-                </span>
+          {folders.map((folder) => {
+            const currentFileType =
+              folder.fileTypes === 'all' || folder.fileTypes === 'images' ? folder.fileTypes : 'all';
+            return (
+              <div className="row" key={folder.id}>
+                <div className="row__copy">
+                  <strong>{folder.path}</strong>
+                  <span>
+                    → {folder.destinationLabel} · {folder.trigger.replace('-', ' ')}
+                  </span>
+                </div>
+                <div className="topbar__actions">
+                  <select
+                    className="select"
+                    onChange={(e) => void updateFileTypes(folder.id, e.target.value as 'all' | 'images')}
+                    value={currentFileType}
+                  >
+                    <option value="all">All files</option>
+                    <option value="images">Images only</option>
+                  </select>
+                  <Button onClick={() => void removeFolder(folder.id)} variant="ghost">
+                    Remove
+                  </Button>
+                </div>
               </div>
-              <Button
-                onClick={() =>
-                  void backend.updateSettings({ watchFolders: folders.filter((f) => f.id !== folder.id) })
-                }
-                variant="ghost"
-              >
-                Remove
-              </Button>
-            </div>
-          ))}
+            );
+          })}
         </div>
       ) : (
         <div className="empty">No watch folders configured.</div>
       )}
+    </section>
+  );
+}
+
+function ShellIntegrationSection() {
+  const tauriAvailable = isTauri();
+  const [enabled, setEnabled] = useState(false);
+  const [status, setStatus] = useState<ShellIntegrationResult | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const platform = useMemo(() => {
+    if (typeof navigator === 'undefined') return 'unknown';
+    const p = navigator.platform.toLowerCase();
+    if (p.includes('win')) return 'Windows';
+    if (p.includes('mac')) return 'macOS';
+    if (p.includes('linux')) return 'Linux';
+    return navigator.platform;
+  }, []);
+
+  const toggle = async (next: boolean) => {
+    setBusy(true);
+    try {
+      const result = next ? await registerContextMenu() : await unregisterContextMenu();
+      setStatus(result);
+      setEnabled(result.ok && next);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="card">
+      <p className="card__eyebrow">Shell integration</p>
+      <h2 className="card__title">Send via DropBeam from the file manager</h2>
+      <p className="card__copy">
+        Installs a "Send via DropBeam" entry in your OS file manager. Selecting files and choosing it launches DropBeam
+        with those paths queued in the Send screen.
+      </p>
+
+      <label className="checkbox">
+        <input
+          checked={enabled}
+          disabled={!tauriAvailable || busy}
+          onChange={(e) => void toggle(e.target.checked)}
+          type="checkbox"
+        />
+        Install "Send via DropBeam" entry ({platform})
+      </label>
+
+      {!tauriAvailable ? (
+        <p className="card__copy">Shell integration requires the desktop app.</p>
+      ) : null}
+
+      {status ? (
+        <p className="card__copy">
+          {status.ok ? (
+            <>Installed at <code>{status.path ?? status.platform}</code>.</>
+          ) : (
+            <>Failed: {status.error ?? 'unknown error'}</>
+          )}
+        </p>
+      ) : null}
+
+      {platform === 'macOS' ? (
+        <p className="card__copy">
+          On macOS the Service shell registers under Library/Services. Workflow body generation is a stretch goal — the
+          stub appears in System Settings → Keyboard → Services but does not yet launch the binary directly.
+        </p>
+      ) : null}
     </section>
   );
 }
