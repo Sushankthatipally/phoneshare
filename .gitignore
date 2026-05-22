@@ -71,3 +71,4 @@ testbundle*/
 # Claude Code local config (per-user permissions)
 .claude/settings.local.json
 .claude/worktrees/
+data/
