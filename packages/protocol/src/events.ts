@@ -1,6 +1,46 @@
 import type { FileDescriptor, FileManifest, PacketHeader } from './packets.js';
 import type { PairingState, SessionState, TransferMode } from './session.js';
 
+export type SystemNotifyKind =
+  | 'incoming'
+  | 'paired'
+  | 'pin'
+  | 'error'
+  | 'transfer-complete';
+
+export interface SystemNotifyPayload {
+  title: string;
+  body: string;
+  sessionId?: string | null;
+  kind: SystemNotifyKind;
+  emittedAt: string;
+}
+
+export interface WatchFolderFiredPayload {
+  watchFolderId: string;
+  watchFolderPath: string;
+  destinationFingerprint: string;
+  destinationLabel: string;
+  sessionId: string | null;
+  uploadId: string;
+  file: {
+    name: string;
+    relativePath: string | null;
+    size: number;
+    mimeType: string;
+    lastModified: number | null;
+    sha256Prefix: string;
+  };
+  firedAt: string;
+}
+
+export interface BackendEventMap {
+  'system-notify': SystemNotifyPayload;
+  'watch-folder-fired': WatchFolderFiredPayload;
+}
+
+export type BackendEventType = keyof BackendEventMap;
+
 export const TRANSFER_EVENT_TYPES = [
   'session-created',
   'session-updated',

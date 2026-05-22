@@ -11,6 +11,7 @@ import { randomBytes } from 'node:crypto';
 import { resolveBackendConfig } from './config.js';
 import { BackendDiscoveryService } from './discovery.js';
 import { LocalBackendStore } from './store.js';
+import { WatchFolderDriver } from './watch-folders.js';
 
 const { dataDir, host, port } = resolveBackendConfig();
 
@@ -27,6 +28,12 @@ const discovery = new BackendDiscoveryService({
   host,
   port,
 });
+const watchFolders = new WatchFolderDriver({
+  store,
+  broadcast: (type, payload) => broadcast(type, payload),
+  log: (message) => console.warn(`[watch-folder] ${message}`),
+});
+store.onPeerConnected((fingerprint) => watchFolders.notePeerConnected(fingerprint));
 
 // Boot asynchronously so the source compiles to CJS (no top-level await).
 void (async function bootBackend() {
@@ -276,6 +283,27 @@ async function handleRequest(req, res) {
     return runBenchmarkBlob(req, res, searchParams);
   }
 
+  // ─── System notify (forwarded to Tauri renderer via SSE) ──
+  if (req.method === 'POST' && pathname === '/api/notify/system') {
+    const body = await readJson(req);
+    const payload = buildSystemNotifyPayload(body ?? {});
+    broadcast('system-notify', payload);
+    return sendJson(res, 200, { ok: true, notify: payload });
+  }
+
+  // ─── Watch folder ───────────────────────────────────────
+  if (req.method === 'POST' && pathname === '/api/watch-folder/file-detected') {
+    const body = await readJson(req);
+    if (!body?.watchFolderId || typeof body?.path !== 'string') {
+      return sendJson(res, 400, { ok: false, error: 'watchFolderId and path are required' });
+    }
+    const result = await watchFolders.noteFileDetected({
+      watchFolderId: String(body.watchFolderId),
+      path: String(body.path),
+    });
+    return sendJson(res, 200, { ok: true, fired: result });
+  }
+
   // ─── Event stream ───────────────────────────────────────
   if (req.method === 'GET' && pathname === '/api/events') {
     return openEventStream(req, res);
@@ -494,6 +522,31 @@ function formatBytesServer(bytes) {
 
 function randomUUID() {
   return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+const SYSTEM_NOTIFY_KINDS = new Set(['incoming', 'paired', 'pin', 'error', 'transfer-complete']);
+
+function buildSystemNotifyPayload(input) {
+  const title = typeof input?.title === 'string' ? input.title.trim() : '';
+  const body = typeof input?.body === 'string' ? input.body.trim() : '';
+  const kind = SYSTEM_NOTIFY_KINDS.has(input?.kind) ? input.kind : null;
+  if (!title) throw httpError(400, 'title is required');
+  if (!body) throw httpError(400, 'body is required');
+  if (!kind) throw httpError(400, 'kind must be one of incoming|paired|pin|error|transfer-complete');
+  const sessionId = typeof input?.sessionId === 'string' && input.sessionId.trim() ? input.sessionId.trim() : null;
+  return {
+    title: title.slice(0, 200),
+    body: body.slice(0, 1000),
+    sessionId,
+    kind,
+    emittedAt: new Date().toISOString(),
+  };
+}
+
+function httpError(status, message) {
+  const error = new Error(message);
+  error.status = status;
+  return error;
 }
 
 function rewriteOriginHost(value, hostOverride) {
