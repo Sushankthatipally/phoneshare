@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2022"],
+    "types": [],
+    "ignoreDeprecations": "6.0",
+    "baseUrl": ".",
+    "paths": {
+      "@dropbeam/shared-ui": ["../shared-ui/src/tokens.ts"],
+      "@dropbeam/protocol": ["../protocol/src/types.ts"],
+      "react": ["../../node_modules/.pnpm/@types+react@18.3.29/node_modules/@types/react/index.d.ts"],
+      "react/jsx-runtime": ["../../node_modules/.pnpm/@types+react@18.3.29/node_modules/@types/react/jsx-runtime.d.ts"]
+    }
+  },
+  "include": ["src"]
+}
