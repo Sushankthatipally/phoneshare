@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
+import JSZip from 'jszip';
+
 import { Badge, Button } from '@dropbeam/shared-ui';
 import { formatBytes } from '@dropbeam/protocol';
 
@@ -34,6 +36,7 @@ export function Send({
   const [sending, setSending] = useState(false);
   const [folderPrompt, setFolderPrompt] = useState<File[] | null>(null);
   const [folderMode, setFolderMode] = useState<FolderMode>('preserve');
+  const [folderZipping, setFolderZipping] = useState(false);
   const [largeFilePrompt, setLargeFilePrompt] = useState(false);
   const [sendToSelf, setSendToSelf] = useState(false);
 
@@ -206,7 +209,7 @@ export function Send({
           </Button>
           {Object.values(targetState).some((s) => s.status === 'failed') ? (
             <Button onClick={() => void retryFailed()} variant="secondary">
-              Retry failed
+              Retry failed targets
             </Button>
           ) : null}
         </div>
@@ -272,16 +275,29 @@ export function Send({
               Cancel
             </Button>
             <Button
-              onClick={() => {
+              disabled={folderZipping}
+              onClick={async () => {
                 const files = folderPrompt;
                 if (!files) return;
+                if (folderMode === 'zip') {
+                  setFolderZipping(true);
+                  try {
+                    const zipped = await zipFolder(files);
+                    setQueuedFiles([zipped]);
+                    setFolderPrompt(null);
+                    if (zipped.size >= LARGE_FILE_THRESHOLD) setLargeFilePrompt(true);
+                  } finally {
+                    setFolderZipping(false);
+                  }
+                  return;
+                }
                 setQueuedFiles(folderMode === 'flat' ? files.map((f) => stripPath(f)) : files);
                 setFolderPrompt(null);
                 if (files.some((f) => f.size >= LARGE_FILE_THRESHOLD)) setLargeFilePrompt(true);
               }}
               variant="primary"
             >
-              Continue with {folderMode}
+              {folderZipping ? 'Zipping…' : `Continue with ${folderMode}`}
             </Button>
           </div>
         </Modal>
@@ -323,18 +339,20 @@ export function Send({
     </>
   );
 
-  async function sendQueuedFiles() {
+  async function sendQueuedFiles(override?: { sessionIds?: string[]; sendToSelf?: boolean }) {
     if (!queuedFiles.length || sending) return;
-    if (!selectedSessionIds.length && !sendToSelf) return;
+    const effectiveSessionIds = override?.sessionIds ?? selectedSessionIds;
+    const effectiveSendToSelf = override?.sendToSelf ?? sendToSelf;
+    if (!effectiveSessionIds.length && !effectiveSendToSelf) return;
 
     setSending(true);
-    const selected = verifiedSessions.filter((s) => selectedSessionIds.includes(s.id));
+    const selected = verifiedSessions.filter((s) => effectiveSessionIds.includes(s.id));
 
-    setTargetState(() => {
-      const initial: Record<string, SendTargetState> = {};
-      for (const session of selected) initial[session.id] = { message: 'Starting…', progress: 0, status: 'uploading', failedFiles: [] };
-      if (sendToSelf) initial.self = { message: 'Copying…', progress: 0, status: 'uploading', failedFiles: [] };
-      return initial;
+    setTargetState((current) => {
+      const next = { ...current };
+      for (const session of selected) next[session.id] = { message: 'Starting…', progress: 0, status: 'uploading', failedFiles: [] };
+      if (effectiveSendToSelf) next.self = { message: 'Copying…', progress: 0, status: 'uploading', failedFiles: [] };
+      return next;
     });
 
     const tasks: Promise<void>[] = [];
@@ -344,11 +362,10 @@ export function Send({
       tasks.push(uploadAll(session.id, session.mode));
     }
 
-    if (sendToSelf) {
+    if (effectiveSendToSelf) {
       tasks.push(
         (async () => {
           try {
-            // Send-to-self: stage every file through the browser download manager.
             for (const file of queuedFiles) {
               const url = URL.createObjectURL(file);
               const a = document.createElement('a');
@@ -440,13 +457,10 @@ export function Send({
     const failingKeys = Object.entries(targetState).filter(([, s]) => s.status === 'failed').map(([k]) => k);
     if (!failingKeys.length) return;
     const failureSet = new Set(failingKeys);
-    const originalSelected = selectedSessionIds.slice();
-    const originalSelf = sendToSelf;
-    setSelectedSessionIds(originalSelected.filter((id) => failureSet.has(id)));
-    setSendToSelf(originalSelf && failureSet.has('self'));
-    await sendQueuedFiles();
-    setSelectedSessionIds(originalSelected);
-    setSendToSelf(originalSelf);
+    const retrySessionIds = selectedSessionIds.filter((id) => failureSet.has(id));
+    const retrySelf = sendToSelf && failureSet.has('self');
+    if (!retrySessionIds.length && !retrySelf) return;
+    await sendQueuedFiles({ sessionIds: retrySessionIds, sendToSelf: retrySelf });
   }
 }
 
@@ -485,6 +499,18 @@ function getRelativePath(file: File) {
 function stripPath(file: File) {
   const flat = new File([file], file.name, { type: file.type, lastModified: file.lastModified });
   return flat;
+}
+
+async function zipFolder(files: File[]): Promise<File> {
+  const zip = new JSZip();
+  for (const file of files) {
+    const entryPath = getRelativePath(file);
+    zip.file(entryPath, file, { date: new Date(file.lastModified) });
+  }
+  const firstPath = getRelativePath(files[0] ?? new File([], 'archive'));
+  const root = firstPath.split(/[\\/]/)[0] || 'folder';
+  const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 6 } });
+  return new File([blob], `${root}.zip`, { type: 'application/zip', lastModified: Date.now() });
 }
 
 function estimateTime(bytes: number, bytesPerSecond: number) {

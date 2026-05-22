@@ -1,10 +1,12 @@
 import { useState } from 'react';
 
 import { Badge, Button } from '@dropbeam/shared-ui';
-import { formatBytes } from '@dropbeam/protocol';
+import { formatBytes, resolveBackendOrigin } from '@dropbeam/protocol';
 
 import { Modal } from '../components/Modal.js';
 import type { DesktopBackendState } from '../features/dashboard/useDesktopBackend.js';
+
+const BACKEND_ORIGIN = resolveBackendOrigin(import.meta.env.VITE_DROPBEAM_API);
 
 export function Receive({ backend }: { backend: DesktopBackendState }) {
   const [acceptSomeBatchId, setAcceptSomeBatchId] = useState<string | null>(null);
@@ -40,7 +42,7 @@ export function Receive({ backend }: { backend: DesktopBackendState }) {
                 <div className="row" key={batch.id} style={{ gridTemplateColumns: '1fr' }}>
                   <div className="row__copy">
                     <strong>
-                      📥 {batch.sourceDeviceName ?? session.peerDevice?.name ?? 'Phone'} wants to send {batch.files.length} file
+                      {batch.sourceDeviceName ?? session.peerDevice?.name ?? 'Phone'} wants to send {batch.files.length} file
                       {batch.files.length === 1 ? '' : 's'}
                     </strong>
                     <span>{formatBytes(totalBytes)} · {batch.direction}</span>
@@ -148,7 +150,7 @@ export function Receive({ backend }: { backend: DesktopBackendState }) {
   );
 
   async function acceptBatch(sessionId: string, batchId: string, fileIds: string[] | null) {
-    const url = `${resolveOrigin()}/api/sessions/${encodeURIComponent(sessionId)}/transfers/${encodeURIComponent(batchId)}/accept`;
+    const url = `${BACKEND_ORIGIN}/api/sessions/${encodeURIComponent(sessionId)}/transfers/${encodeURIComponent(batchId)}/accept`;
     await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -159,13 +161,9 @@ export function Receive({ backend }: { backend: DesktopBackendState }) {
   }
 
   async function declineBatch(sessionId: string, batchId: string) {
-    const url = `${resolveOrigin()}/api/sessions/${encodeURIComponent(sessionId)}/transfers/${encodeURIComponent(batchId)}/decline`;
+    const url = `${BACKEND_ORIGIN}/api/sessions/${encodeURIComponent(sessionId)}/transfers/${encodeURIComponent(batchId)}/decline`;
     await fetch(url, { method: 'POST' });
     await backend.refresh();
   }
 }
 
-function resolveOrigin() {
-  if (typeof window === 'undefined') return 'http://127.0.0.1:17619';
-  return `${window.location.protocol}//${window.location.hostname}:17619`;
-}
