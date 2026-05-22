@@ -1,6 +1,7 @@
 // On release builds, run as a true Windows GUI app so no console window appears.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod mdns;
 mod notify_shell;
 mod watcher;
 
@@ -57,6 +58,7 @@ fn main() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
         .manage(watcher::WatcherState::new())
+        .manage(mdns::MdnsState::new())
         .manage(PendingSend(Mutex::new(send_paths.clone())))
         .manage(BackendChild(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
@@ -66,6 +68,8 @@ fn main() {
             notify_shell::system_notify,
             notify_shell::register_context_menu,
             notify_shell::unregister_context_menu,
+            mdns::init_mdns,
+            mdns::shutdown_mdns,
             get_pending_send_paths,
             clear_pending_send_paths,
         ])
@@ -82,10 +86,29 @@ fn main() {
                 });
             }
 
+            let mdns_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(1_500)).await;
+                if let Some(state) = mdns_handle.try_state::<mdns::MdnsState>() {
+                    if let Err(err) = mdns::init_mdns(
+                        mdns_handle.clone(),
+                        state,
+                        mdns::MdnsInitArgs {
+                            device_id: None,
+                            device_name: None,
+                            icon: None,
+                        },
+                    ) {
+                        tracing::warn!("mdns auto-start failed: {err}");
+                    }
+                }
+            });
+
             Ok(())
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
+                mdns::shutdown_from_handle(window.app_handle());
                 kill_backend(window.app_handle());
             }
         })

@@ -1,81 +1,47 @@
-import dgram from 'node:dgram';
+import net from 'node:net';
 import os from 'node:os';
 
-const DEFAULT_DISCOVERY_PORT = 38_251;
-const DISCOVERY_PROTOCOL = 'dropbeam.discovery.v1';
-const DISCOVERY_TTL_SECONDS = 12;
-const ANNOUNCE_INTERVAL_MS = 3_000;
+const PEER_TTL_MS = 30_000;
+const MANUAL_PROBE_TIMEOUT_MS = 2_000;
 
 export class BackendDiscoveryService {
-  constructor({
-    deviceProvider,
-    emit,
-    host,
-    port,
-    discoveryPort = DEFAULT_DISCOVERY_PORT,
-  }) {
+  constructor({ deviceProvider, emit, host, port }) {
     this.deviceProvider = deviceProvider;
     this.emit = emit;
     this.host = host;
     this.port = port;
-    this.discoveryPort = discoveryPort;
     this.advertiseHost = resolveAdvertiseHost(host);
     this.peers = new Map();
-    this.announcementTimer = null;
-    this.broadcaster = null;
-    this.listener = null;
+    this.pruneTimer = null;
+    this.started = false;
   }
 
   async start() {
-    if (this.broadcaster || this.listener) {
-      return;
-    }
-
-    this.broadcaster = dgram.createSocket('udp4');
-    this.listener = dgram.createSocket({ type: 'udp4', reuseAddr: true });
-
-    this.broadcaster.on('error', () => {});
-    this.listener.on('error', () => {});
-    this.listener.on('message', (message, remoteInfo) => {
-      void this.recordPeerPacket(message, remoteInfo);
-    });
-
-    await bindSocket(this.broadcaster, 0);
-    this.broadcaster.setBroadcast(true);
-    await bindSocket(this.listener, this.discoveryPort);
-
-    this.announcementTimer = setInterval(() => {
-      void this.broadcastAdvertisement();
-    }, ANNOUNCE_INTERVAL_MS);
-    this.announcementTimer.unref?.();
-    await this.broadcastAdvertisement();
+    if (this.started) return;
+    this.started = true;
+    this.pruneTimer = setInterval(() => {
+      if (this.pruneExpired() > 0) {
+        this.broadcastUpdate();
+      }
+    }, 5_000);
+    this.pruneTimer.unref?.();
   }
 
   async stop() {
-    if (this.announcementTimer) {
-      clearInterval(this.announcementTimer);
-      this.announcementTimer = null;
+    if (this.pruneTimer) {
+      clearInterval(this.pruneTimer);
+      this.pruneTimer = null;
     }
-
-    if (this.broadcaster) {
-      this.broadcaster.close();
-      this.broadcaster = null;
-    }
-
-    if (this.listener) {
-      this.listener.close();
-      this.listener = null;
-    }
+    this.peers.clear();
+    this.started = false;
   }
 
   status() {
     this.pruneExpired();
-
     return {
-      enabled: Boolean(this.broadcaster && this.listener),
-      bindAddress: this.host,
+      enabled: this.started,
+      serviceType: '_dropbeam._tcp.local.',
       advertiseHost: this.advertiseHost,
-      discoveryPort: this.discoveryPort,
       servicePort: this.port,
       peerCount: this.peers.size,
     };
@@ -83,89 +49,123 @@ export class BackendDiscoveryService {
 
   listPeers({ includeLocal = true } = {}) {
     this.pruneExpired();
-
     const peers = [...this.peers.values()].sort((left, right) => right.seenAt.localeCompare(left.seenAt));
-    if (!includeLocal) {
-      return peers;
-    }
-
+    if (!includeLocal) return peers;
     return [this.localRecord(), ...peers];
   }
 
-  async broadcastAdvertisement() {
-    if (!this.broadcaster) {
-      return;
+  recordPeerSeen(input = {}) {
+    const id = sanitizeText(input.id) ?? sanitizeText(input.fullname);
+    if (!id) {
+      const error = new Error('peer-seen requires id or fullname');
+      error.status = 400;
+      throw error;
     }
-
-    const payload = Buffer.from(JSON.stringify(this.buildAdvertisement()), 'utf8');
-    await new Promise((resolve) => {
-      this.broadcaster.send(payload, this.discoveryPort, '255.255.255.255', () => resolve());
-    });
-  }
-
-  buildAdvertisement() {
-    const device = this.deviceProvider();
-    return {
-      protocol: DISCOVERY_PROTOCOL,
-      device,
-      host: this.advertiseHost,
-      servicePort: this.port,
-      transport: 'wifi',
-      generatedAt: new Date().toISOString(),
-      ttlSeconds: DISCOVERY_TTL_SECONDS,
-    };
-  }
-
-  async recordPeerPacket(packet, remoteInfo) {
-    let advertisement;
-
-    try {
-      advertisement = JSON.parse(packet.toString('utf8'));
-    } catch {
-      return;
-    }
-
-    if (advertisement?.protocol !== DISCOVERY_PROTOCOL) {
-      return;
-    }
-
     const local = this.deviceProvider();
-    if (advertisement.device?.id === local.id) {
-      return;
+    if (id === local.id) {
+      return null;
     }
 
-    const seenAt = new Date().toISOString();
-    const expiresAt = new Date(Date.now() + (Number(advertisement.ttlSeconds) || DISCOVERY_TTL_SECONDS) * 1000).toISOString();
-    const host = typeof advertisement.host === 'string' && advertisement.host.trim() ? advertisement.host.trim() : remoteInfo.address;
-
-    this.peers.set(advertisement.device.id, {
-      id: advertisement.device.id,
-      name: advertisement.device.name,
-      icon: advertisement.device.icon ?? 'desktop',
-      platform: advertisement.device.platform ?? 'unknown',
+    const host = sanitizeText(input.host) ?? (input.addresses?.find(Boolean) ?? '');
+    if (!host) {
+      const error = new Error('peer-seen requires host');
+      error.status = 400;
+      throw error;
+    }
+    const port = Number.isFinite(Number(input.port)) ? Number(input.port) : this.port;
+    const transports = Array.isArray(input.transports)
+      ? input.transports.map((t) => String(t)).filter(Boolean)
+      : [];
+    const transport = transports.includes('wifi') ? 'wifi' : transports[0] ?? 'wifi';
+    const now = new Date();
+    const record = {
+      id,
+      name: sanitizeText(input.name) ?? id,
+      icon: sanitizeIcon(input.icon),
+      platform: sanitizeText(input.platform) ?? 'unknown',
       host,
-      port: Number(advertisement.servicePort) || this.port,
-      serviceOrigin: `http://${host}:${Number(advertisement.servicePort) || this.port}`,
-      transport: advertisement.transport ?? 'wifi',
-      source: remoteInfo.address,
-      seenAt,
-      expiresAt,
+      port,
+      serviceOrigin: `http://${host}:${port}`,
+      transport,
+      transports,
+      version: sanitizeText(input.version) ?? null,
+      source: 'mdns',
+      seenAt: now.toISOString(),
+      expiresAt: new Date(now.getTime() + PEER_TTL_MS).toISOString(),
       local: false,
-    });
+    };
+    this.peers.set(id, record);
+    this.broadcastUpdate();
+    return record;
+  }
 
-    this.emit?.('discovery-updated', {
-      items: this.listPeers(),
-      status: this.status(),
-    });
+  recordPeerGone(input = {}) {
+    const id = sanitizeText(input.id) ?? sanitizeText(input.fullname);
+    if (!id) return false;
+    const removed = this.peers.delete(id);
+    if (removed) this.broadcastUpdate();
+    return removed;
+  }
+
+  async addManualPeer(input = {}) {
+    const host = sanitizeText(input.host);
+    const port = Number(input.port);
+    if (!host) {
+      const error = new Error('host is required');
+      error.status = 400;
+      throw error;
+    }
+    if (!Number.isFinite(port) || port <= 0 || port > 65_535) {
+      const error = new Error('port must be a valid TCP port');
+      error.status = 400;
+      throw error;
+    }
+
+    await probeTcp(host, port, MANUAL_PROBE_TIMEOUT_MS);
+
+    const label = sanitizeText(input.label) ?? `${host}:${port}`;
+    const id = `manual:${host}:${port}`;
+    const now = new Date();
+    const record = {
+      id,
+      name: label,
+      icon: 'desktop',
+      platform: 'unknown',
+      host,
+      port,
+      serviceOrigin: `http://${host}:${port}`,
+      transport: 'wifi',
+      transports: ['wifi'],
+      version: null,
+      source: 'manual',
+      seenAt: now.toISOString(),
+      expiresAt: new Date(8_640_000_000_000_000).toISOString(),
+      local: false,
+      label,
+    };
+    this.peers.set(id, record);
+    this.broadcastUpdate();
+    return record;
   }
 
   pruneExpired() {
     const now = Date.now();
+    let removed = 0;
     for (const [id, peer] of this.peers.entries()) {
+      if (peer.source === 'manual') continue;
       if (Date.parse(peer.expiresAt) <= now) {
         this.peers.delete(id);
+        removed += 1;
       }
     }
+    return removed;
+  }
+
+  broadcastUpdate() {
+    this.emit?.('discovery-update', {
+      items: this.listPeers(),
+      status: this.status(),
+    });
   }
 
   localRecord() {
@@ -180,22 +180,50 @@ export class BackendDiscoveryService {
       port: this.port,
       serviceOrigin: `http://${this.advertiseHost}:${this.port}`,
       transport: 'wifi',
+      transports: ['wifi', 'usb'],
+      version: null,
       source: 'self',
       seenAt: now,
-      expiresAt: new Date(Date.now() + DISCOVERY_TTL_SECONDS * 1000).toISOString(),
+      expiresAt: new Date(Date.now() + PEER_TTL_MS).toISOString(),
       local: true,
     };
   }
 }
 
-function bindSocket(socket, port) {
+function probeTcp(host, port, timeoutMs) {
   return new Promise((resolve, reject) => {
-    socket.once('error', reject);
-    socket.bind(port, () => {
-      socket.off('error', reject);
-      resolve();
-    });
+    const socket = new net.Socket();
+    let settled = false;
+    const finish = (err) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      if (err) {
+        const wrapped = new Error(`TCP probe failed for ${host}:${port}: ${err.message ?? err}`);
+        wrapped.status = 502;
+        reject(wrapped);
+      } else {
+        resolve();
+      }
+    };
+    socket.setTimeout(timeoutMs);
+    socket.once('connect', () => finish());
+    socket.once('timeout', () => finish(new Error('timeout')));
+    socket.once('error', (err) => finish(err));
+    socket.connect(port, host);
   });
+}
+
+function sanitizeText(value) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed.length ? trimmed : null;
+}
+
+function sanitizeIcon(value) {
+  const allowed = new Set(['desktop', 'laptop', 'phone', 'tablet']);
+  if (typeof value === 'string' && allowed.has(value)) return value;
+  return 'desktop';
 }
 
 function resolveAdvertiseHost(bindAddress) {
@@ -211,53 +239,23 @@ function resolveAdvertiseHost(bindAddress) {
 
   const interfaces = os.networkInterfaces();
   const candidates = [];
-
   for (const [name, items] of Object.entries(interfaces)) {
     for (const item of items ?? []) {
-      if (item.family !== 'IPv4' || item.internal) {
-        continue;
-      }
-
-      candidates.push({
-        name,
-        address: item.address,
-        score: scoreInterface(name, item.address),
-      });
+      if (item.family !== 'IPv4' || item.internal) continue;
+      candidates.push({ name, address: item.address, score: scoreInterface(name, item.address) });
     }
   }
-
   candidates.sort((left, right) => right.score - left.score);
-
-  if (candidates.length) {
-    return candidates[0].address;
-  }
-
-  return '127.0.0.1';
+  return candidates[0]?.address ?? '127.0.0.1';
 }
 
 function scoreInterface(name, address) {
   const normalized = name.toLowerCase();
   let score = 0;
-
-  if (/wi-?fi|wireless|wlan/.test(normalized)) {
-    score += 100;
-  }
-
-  if (/ethernet/.test(normalized)) {
-    score += 40;
-  }
-
-  if (/vmware|virtual|vbox|hyper-v|vethernet|docker|wsl|tailscale|loopback/.test(normalized)) {
-    score -= 100;
-  }
-
-  if (/^192\.168\.1\./.test(address) || /^10\./.test(address)) {
-    score += 10;
-  }
-
-  if (/^192\.168\.(93|193)\./.test(address)) {
-    score -= 20;
-  }
-
+  if (/wi-?fi|wireless|wlan/.test(normalized)) score += 100;
+  if (/ethernet/.test(normalized)) score += 40;
+  if (/vmware|virtual|vbox|hyper-v|vethernet|docker|wsl|tailscale|loopback/.test(normalized)) score -= 100;
+  if (/^192\.168\.1\./.test(address) || /^10\./.test(address)) score += 10;
+  if (/^192\.168\.(93|193)\./.test(address)) score -= 20;
   return score;
 }
