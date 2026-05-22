@@ -27,7 +27,6 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 
 use diagnostics::{log_bridge, BridgeLayer};
 use mdns::MdnsRegistry;
-use usb_android::UsbAndroidBridge;
 
 /// Files passed in via `dropbeam-desktop.exe --send <path> [--send <path>]...`
 /// (the Windows context-menu invocation). Held in app state so the JS layer
@@ -84,20 +83,15 @@ fn main() {
 
     let send_paths = parse_send_paths(env::args().collect());
 
-    let usb_android_bridge =
-        UsbAndroidBridge::new(env::var("DROPBEAM_ADB").unwrap_or_else(|_| "adb".to_string()), 17619, 17619);
-
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
         .manage(watcher::WatcherState::new())
-        .manage(mdns::MdnsState::new())
         .manage(PendingSend(Mutex::new(send_paths.clone())))
         .manage(BackendChild(Mutex::new(None)))
         .manage(MdnsRegistry::new())
-        .manage(usb_android_bridge)
         .manage(log_bridge().buffer())
         .invoke_handler(tauri::generate_handler![
             watcher::start_watch_folder,
@@ -106,8 +100,6 @@ fn main() {
             notify_shell::system_notify,
             shell_integration::register_context_menu,
             shell_integration::unregister_context_menu,
-            mdns::init_mdns,
-            mdns::shutdown_mdns,
             mdns::mdns_status,
             usb_android::usb_android_status,
             usb_android::usb_android_ensure_tunnel,
@@ -137,29 +129,10 @@ fn main() {
                 });
             }
 
-            let mdns_handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                tokio::time::sleep(Duration::from_millis(1_500)).await;
-                if let Some(state) = mdns_handle.try_state::<mdns::MdnsState>() {
-                    if let Err(err) = mdns::init_mdns(
-                        mdns_handle.clone(),
-                        state,
-                        mdns::MdnsInitArgs {
-                            device_id: None,
-                            device_name: None,
-                            icon: None,
-                        },
-                    ) {
-                        tracing::warn!("mdns auto-start failed: {err}");
-                    }
-                }
-            });
-
             Ok(())
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
-                mdns::shutdown_from_handle(window.app_handle());
                 kill_backend(window.app_handle());
             }
         })

@@ -16,7 +16,6 @@ use tokio::process::Command;
 use tracing::field::{Field, Visit};
 use tracing_subscriber::Layer;
 
-use crate::usb_android::UsbAndroidBridge;
 
 const LOG_RING_CAPACITY: usize = 500;
 const LOG_EVENT: &str = "dropbeam:log";
@@ -255,12 +254,6 @@ pub fn diagnostics_log_snapshot(buffer: State<'_, Arc<LogRingBuffer>>) -> Vec<Lo
     buffer.snapshot()
 }
 
-#[tauri::command]
-pub async fn usb_android_status(
-    bridge: State<'_, UsbAndroidBridge>,
-) -> Result<crate::usb_android::UsbAndroidStatus, String> {
-    Ok(bridge.status().await)
-}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
