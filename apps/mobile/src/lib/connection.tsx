@@ -59,6 +59,8 @@ export interface GuestConnection {
   origin: string;
   token: string;
   label: string;
+  sessionId?: undefined;
+  peerName?: undefined;
 }
 
 export interface SecureSession {
@@ -76,6 +78,42 @@ export interface SecureSession {
 }
 
 export type ActiveConnection = GuestConnection | SecureSession;
+
+export type BackendEvent =
+  | { type: 'transfer-requested'; sessionId: string; batch: TransferBatch }
+  | { type: 'transfer-accepted'; sessionId: string; batchId: string; fileIds: string[] }
+  | { type: 'transfer-declined'; sessionId: string; batchId: string; reason: string | null }
+  | { type: 'upload-progress'; upload: UploadProgress }
+  | { type: 'file-uploaded'; session: { id: string }; file: { id: string; name: string; size: number } }
+  | { type: 'session-paired'; session: { id: string } }
+  | { type: 'session-closed'; session: { id: string } }
+  | { type: string; [key: string]: unknown };
+
+export interface TransferBatch {
+  id: string;
+  direction: string;
+  sourceDeviceName: string | null;
+  requestedAt: string;
+  files: Array<{
+    id: string;
+    name: string;
+    size: number;
+    mimeType: string;
+    relativePath: string | null;
+    lastModified: number | null;
+  }>;
+}
+
+export interface UploadProgress {
+  id: string;
+  sessionId: string;
+  direction: string;
+  name: string;
+  size: number;
+  uploadedBytes: number;
+  progressPercent: number;
+  averageBytesPerSecond: number;
+}
 
 export interface HistoryEntry {
   id: string;
@@ -132,6 +170,9 @@ interface ConnectionContextValue {
   addHistory: (entry: HistoryEntry) => void;
   updateHistory: (id: string, patch: Partial<HistoryEntry>) => void;
   clearHistory: () => void;
+
+  /** Subscribe to backend SSE events for the active session. */
+  subscribe: (listener: (event: BackendEvent) => void) => () => void;
 }
 
 const ConnectionContext = createContext<ConnectionContextValue | null>(null);
@@ -183,6 +224,23 @@ export function ConnectionProvider({ children }: PropsWithChildren) {
 
   // SSE subscription kept in a ref so unmount can close it.
   const sseRef = useRef<{ close: () => void } | null>(null);
+  const listenersRef = useRef<Set<(event: BackendEvent) => void>>(new Set());
+
+  const subscribe = useCallback((listener: (event: BackendEvent) => void) => {
+    listenersRef.current.add(listener);
+    return () => {
+      listenersRef.current.delete(listener);
+    };
+  }, []);
+
+  const broadcastToListeners = useCallback((type: string, payload: unknown) => {
+    const event = { type, ...((payload as Record<string, unknown>) ?? {}) } as BackendEvent;
+    for (const listener of listenersRef.current) {
+      try {
+        listener(event);
+      } catch {}
+    }
+  }, []);
 
   const persistSession = useCallback(async (session: SecureSession | null) => {
     if (!session) {
@@ -356,9 +414,12 @@ export function ConnectionProvider({ children }: PropsWithChildren) {
               try {
                 const parsed = JSON.parse(dataLine);
                 const type = typeof parsed?.type === 'string' ? parsed.type : eventName;
-                onEvent(type, parsed?.payload ?? parsed);
+                const payload = parsed?.payload ?? parsed;
+                onEvent(type, payload);
+                broadcastToListeners(type, payload);
               } catch {
                 onEvent(eventName, dataLine);
+                broadcastToListeners(eventName, { raw: dataLine });
               }
             }
           }
@@ -611,6 +672,7 @@ export function ConnectionProvider({ children }: PropsWithChildren) {
       addHistory,
       updateHistory,
       clearHistory,
+      subscribe,
     }),
     [
       addHistory,
@@ -631,6 +693,7 @@ export function ConnectionProvider({ children }: PropsWithChildren) {
       startDirectHandshake,
       startHotspotHandshake,
       state,
+      subscribe,
       updateHistory,
       verifyPin,
     ],

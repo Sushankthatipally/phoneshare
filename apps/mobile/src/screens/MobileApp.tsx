@@ -85,15 +85,7 @@ export function MobileApp({ initialScreen = 'home' }: { initialScreen?: Screen }
       {screen === 'receive' ? <ReceiveScreen backend={backend} /> : null}
       {screen === 'send' ? <SendScreenView /> : null}
       {screen === 'history' ? <HistoryScreen /> : null}
-      {screen === 'incoming' ? (
-        <IncomingScreen
-          sender="Awaiting peer"
-          files={[]}
-          onAcceptAll={() => setScreen('home')}
-          onAcceptSome={() => setScreen('home')}
-          onDecline={() => setScreen('home')}
-        />
-      ) : null}
+      {screen === 'incoming' ? <IncomingScreen /> : null}
       {screen === 'hotspot' ? (
         <HotspotJoinScreen
           ssid="—"
