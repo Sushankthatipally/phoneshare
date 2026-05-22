@@ -6,7 +6,7 @@
 import { createServer } from 'node:http';
 import { createReadStream } from 'node:fs';
 import { pipeline } from 'node:stream/promises';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 
 import { resolveBackendConfig } from './config.js';
 import { BackendDiscoveryService } from './discovery.js';
@@ -300,7 +300,7 @@ function buildHealth() {
   };
 }
 
-function renderGuestPage(res, token) {
+async function renderGuestPage(res, token) {
   const share = store.getGuestShare(token);
   if (!share) {
     res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
@@ -346,12 +346,13 @@ function renderGuestPage(res, token) {
 
   res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
   res.end(html);
+  // Increment once per token-load (HTML page render), NOT per file download.
+  await store.incrementGuestUse(token);
 }
 
 async function serveGuestFile(res, token, fileId) {
   const found = store.guestFilePath(token, fileId);
   if (!found) return sendJson(res, 404, { ok: false, error: 'Share or file not found' });
-  await store.incrementGuestUse(token);
   res.writeHead(200, {
     'Content-Type': found.file.mimeType,
     'Content-Length': String(found.file.size),
@@ -490,10 +491,6 @@ function formatBytesServer(bytes) {
   let i = 0;
   while (v >= 1024 && i < units.length - 1) { v /= 1024; i += 1; }
   return `${v.toFixed(v >= 100 || i === 0 ? 0 : 1)} ${units[i]}`;
-}
-
-function randomUUID() {
-  return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
 function rewriteOriginHost(value, hostOverride) {
