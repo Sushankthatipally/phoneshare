@@ -1,13 +1,17 @@
 package com.dropbeam.mobile
 
+import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Parcelable
 
 import com.facebook.react.ReactActivity
 import com.facebook.react.ReactActivityDelegate
 import com.facebook.react.defaults.DefaultNewArchitectureEntryPoint.fabricEnabled
 import com.facebook.react.defaults.DefaultReactActivityDelegate
 
+import com.dropbeam.android.DropBeamShareInbox
 import expo.modules.ReactActivityDelegateWrapper
 
 class MainActivity : ReactActivity() {
@@ -17,6 +21,45 @@ class MainActivity : ReactActivity() {
     // This is required for expo-splash-screen.
     setTheme(R.style.AppTheme);
     super.onCreate(null)
+    handleShareIntent(intent)
+  }
+
+  override fun onNewIntent(intent: Intent) {
+    super.onNewIntent(intent)
+    handleShareIntent(intent)
+  }
+
+  private fun handleShareIntent(intent: Intent?) {
+    intent ?: return
+    val action = intent.action
+    if (action != Intent.ACTION_SEND && action != Intent.ACTION_SEND_MULTIPLE) return
+    val uris = collectStreams(intent)
+    if (uris.isEmpty()) return
+    DropBeamShareInbox.enqueue(applicationContext, uris, intent.type)
+  }
+
+  private fun collectStreams(intent: Intent): List<Uri> {
+    val list = mutableListOf<Uri>()
+    if (intent.action == Intent.ACTION_SEND) {
+      val item: Parcelable? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        intent.getParcelableExtra(Intent.EXTRA_STREAM, Parcelable::class.java)
+      } else {
+        @Suppress("DEPRECATION")
+        intent.getParcelableExtra(Intent.EXTRA_STREAM)
+      }
+      if (item is Uri) list.add(item)
+    } else if (intent.action == Intent.ACTION_SEND_MULTIPLE) {
+      val items: ArrayList<Parcelable>? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Parcelable::class.java)
+      } else {
+        @Suppress("DEPRECATION")
+        intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM)
+      }
+      items?.forEach { item ->
+        if (item is Uri) list.add(item)
+      }
+    }
+    return list
   }
 
   /**

@@ -5,13 +5,16 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.net.wifi.WifiManager
 import android.net.wifi.WifiNetworkSpecifier
 import android.os.Build
+import android.provider.DocumentsContract
 import androidx.core.app.NotificationCompat
 import expo.modules.kotlin.Promise
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * DropBeamAndroidModule — bridges the JS layer to Android-only capabilities:
@@ -33,8 +36,95 @@ class DropBeamAndroidModule : Module() {
     private val context: Context
         get() = appContext.reactContext ?: throw IllegalStateException("React context unavailable")
 
+    private val pendingFolderPromise = AtomicReference<Promise?>(null)
+    private val folderRequestCode = 0xD80B
+
     override fun definition() = ModuleDefinition {
         Name("DropBeamAndroid")
+
+        Events("dropbeam.share-received")
+
+        OnCreate {
+            // Bridge native share-inbox events into JS while the module is alive.
+            DropBeamShareInbox.setListener { uris, mimeType ->
+                try {
+                    sendEvent(
+                        "dropbeam.share-received",
+                        mapOf("uris" to uris, "mimeType" to (mimeType ?: ""))
+                    )
+                } catch (_: Throwable) {
+                    // sendEvent throws if the JS bundle isn't ready yet; the
+                    // payload remains queued in the inbox for the pull path.
+                }
+            }
+        }
+
+        OnDestroy {
+            DropBeamShareInbox.setListener(null)
+        }
+
+        AsyncFunction("pullPendingShares") { promise: Promise ->
+            val (uris, mime) = DropBeamShareInbox.drain()
+            promise.resolve(mapOf("uris" to uris, "mimeType" to (mime ?: "")))
+        }
+
+        AsyncFunction("pickFolder") { promise: Promise ->
+            try {
+                val activity = appContext.activityProvider?.currentActivity
+                    ?: return@AsyncFunction promise.reject("NO_ACTIVITY", "No current activity", null)
+                if (!pendingFolderPromise.compareAndSet(null, promise)) {
+                    return@AsyncFunction promise.reject("BUSY", "Folder picker already open", null)
+                }
+                val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+                    addFlags(
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                            Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+                    )
+                }
+                activity.startActivityForResult(intent, folderRequestCode)
+            } catch (error: Throwable) {
+                pendingFolderPromise.set(null)
+                promise.reject("PICK_FAILED", error.message ?: "Folder picker failed", error)
+            }
+        }
+
+        OnActivityResult { _, payload ->
+            if (payload.requestCode != folderRequestCode) return@OnActivityResult
+            val promise = pendingFolderPromise.getAndSet(null) ?: return@OnActivityResult
+            val data = payload.data
+            val uri = data?.data
+            if (uri == null) {
+                promise.resolve(null)
+                return@OnActivityResult
+            }
+            try {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            } catch (_: Throwable) {
+                // best effort
+            }
+            promise.resolve(mapOf("treeUri" to uri.toString()))
+        }
+
+        AsyncFunction("listFolderContents") { input: Map<String, Any?>, promise: Promise ->
+            try {
+                val treeUriString = input["treeUri"] as? String
+                    ?: return@AsyncFunction promise.reject("BAD_INPUT", "treeUri required", null)
+                val treeUri = Uri.parse(treeUriString)
+                val docId = try {
+                    DocumentsContract.getTreeDocumentId(treeUri)
+                } catch (error: Throwable) {
+                    return@AsyncFunction promise.reject("BAD_TREE", error.message ?: "Bad tree", error)
+                }
+                val result = mutableListOf<Map<String, Any?>>()
+                walkTree(treeUri, docId, "", result)
+                promise.resolve(mapOf("files" to result))
+            } catch (error: Throwable) {
+                promise.reject("LIST_FAILED", error.message ?: "Failed to list folder", error)
+            }
+        }
 
         AsyncFunction("startHotspot") { _: Map<String, Any?>, promise: Promise ->
             try {
@@ -147,6 +237,57 @@ class DropBeamAndroidModule : Module() {
             }
         }
         return channelId
+    }
+
+    /**
+     * Recursive DocumentFile walk that emits a flat list of file descriptors
+     * with their relative path within the picked tree. The JS layer is
+     * responsible for picking these up and uploading them via the standard
+     * file URI path.
+     */
+    private fun walkTree(
+        treeUri: Uri,
+        docId: String,
+        relativePath: String,
+        out: MutableList<Map<String, Any?>>
+    ) {
+        val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, docId)
+        val resolver = context.contentResolver
+        val cursor = resolver.query(
+            childrenUri,
+            arrayOf(
+                DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                DocumentsContract.Document.COLUMN_MIME_TYPE,
+                DocumentsContract.Document.COLUMN_SIZE,
+            ),
+            null,
+            null,
+            null,
+        ) ?: return
+        cursor.use { c ->
+            while (c.moveToNext()) {
+                val childId = c.getString(0)
+                val name = c.getString(1) ?: continue
+                val mime = c.getString(2) ?: "application/octet-stream"
+                val size = if (!c.isNull(3)) c.getLong(3) else 0L
+                val nestedPath = if (relativePath.isEmpty()) name else "$relativePath/$name"
+                if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
+                    walkTree(treeUri, childId, nestedPath, out)
+                } else {
+                    val docUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, childId)
+                    out.add(
+                        mapOf(
+                            "uri" to docUri.toString(),
+                            "name" to name,
+                            "relativePath" to nestedPath,
+                            "mimeType" to mime,
+                            "size" to size,
+                        )
+                    )
+                }
+            }
+        }
     }
 
     private fun pendingIntent(action: String, sessionId: String, batchId: String, requestCode: Int): PendingIntent {

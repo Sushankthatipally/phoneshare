@@ -1,8 +1,12 @@
+import { useEffect } from 'react';
 import type { PropsWithChildren } from 'react';
+import { DeviceEventEmitter, NativeModules, Platform } from 'react-native';
 import { usePathname, useRouter } from 'expo-router';
 
 import { Pressable, SafeAreaView, Text, View } from '../lib/native.js';
+import { useClipboardSync } from '../lib/clipboard-sync.js';
 import { useConnection } from '../lib/connection.js';
+import { useDiscovery } from '../lib/discovery.js';
 
 const TABS: ReadonlyArray<{ path: '/' | '/send' | '/history'; label: string }> = [
   { path: '/', label: 'Connect' },
@@ -13,7 +17,44 @@ const TABS: ReadonlyArray<{ path: '/' | '/send' | '/history'; label: string }> =
 export function MobileChrome({ children }: PropsWithChildren) {
   const pathname = usePathname();
   const router = useRouter();
-  const { connection } = useConnection();
+  const { connection, settings, deviceName } = useConnection();
+
+  useClipboardSync({ connection, enabled: settings.clipboardSyncEnabled });
+
+  // Browse + publish `_dropbeam._tcp` so desktops see this phone. Returns an
+  // empty list when the native module isn't linked; that's the expected state
+  // in Expo Go / managed builds.
+  useDiscovery({
+    publishName: deviceName ? `DropBeam · ${deviceName}` : undefined,
+    publishPort: 0, // 0 lets the OS pick. Real publish happens once W14 binds the listening port.
+  });
+
+  // Route to /share when the OS share sheet delivers files, even on cold start.
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    let cancelled = false;
+    const goShare = () => {
+      if (!cancelled) router.replace('/share');
+    };
+    const sub = DeviceEventEmitter.addListener('dropbeam.share-received', (payload: { uris?: string[] }) => {
+      if (Array.isArray(payload?.uris) && payload.uris.length > 0) goShare();
+    });
+
+    // Cold-start drain.
+    const native = NativeModules?.DropBeamAndroid as
+      | { pullPendingShares?: () => Promise<{ uris: string[] }> }
+      | undefined;
+    native?.pullPendingShares?.().then((res) => {
+      if (res?.uris?.length) goShare();
+    }).catch(() => {
+      /* bridge unavailable */
+    });
+
+    return () => {
+      cancelled = true;
+      sub.remove();
+    };
+  }, [router]);
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: '#020202' }}>

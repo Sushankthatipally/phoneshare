@@ -1,10 +1,29 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { StyleSheet } from 'react-native';
+import * as Device from 'expo-device';
 
 import { Button, ScrollView, Text, TextInput, View } from '../lib/native.js';
 
 export function OnboardingScreen({ onDone }: { onDone: (name: string) => void }) {
-  const [name, setName] = useState('My Phone');
+  const [name, setName] = useState('');
+  const [touched, setTouched] = useState(false);
+
+  // Seed the input with the OS-reported device name (e.g. "Sushank's iPhone")
+  // unless the user has already started typing.
+  useEffect(() => {
+    if (touched) return;
+    const fallback = Device.deviceName?.trim();
+    if (fallback) {
+      setName(fallback);
+    } else {
+      setName('My Phone');
+    }
+  }, [touched]);
+
+  const submit = () => {
+    const final = name.trim() || Device.deviceName?.trim() || 'My Phone';
+    onDone(final);
+  };
 
   return (
     <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.scroll}>
@@ -15,10 +34,17 @@ export function OnboardingScreen({ onDone }: { onDone: (name: string) => void })
           Other devices will see this name when you connect. You can change it later in Settings.
         </Text>
 
-        <TextInput onChangeText={setName} placeholder="My Phone" value={name} />
+        <TextInput
+          onChangeText={(value) => {
+            setTouched(true);
+            setName(value);
+          }}
+          placeholder="My Phone"
+          value={name}
+        />
 
         <View style={{ marginTop: 12 }}>
-          <Button onPress={() => onDone(name.trim() || 'My Phone')}>Continue →</Button>
+          <Button onPress={submit}>Continue →</Button>
         </View>
       </View>
 
@@ -27,7 +53,6 @@ export function OnboardingScreen({ onDone }: { onDone: (name: string) => void })
         <Text style={styles.title}>You're almost there</Text>
         <Text style={styles.copy}>
           After this, you'll connect to your DropBeam desktop using either a QR scan or by pasting a share URL.
-          USB cable and hotspot modes are coming in a future update.
         </Text>
       </View>
     </ScrollView>
