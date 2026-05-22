@@ -213,6 +213,21 @@ async function handleRequest(req, res) {
   if (req.method === 'GET' && pathname === '/api/discovery') {
     return sendJson(res, 200, { ok: true, items: discovery.listPeers(), status: discovery.status() });
   }
+  if (req.method === 'POST' && pathname === '/api/discovery/manual-add') {
+    const body = await readJson(req);
+    const peer = await discovery.addManualPeer(body ?? {});
+    return sendJson(res, 201, { ok: true, peer });
+  }
+  if (req.method === 'POST' && pathname === '/api/discovery/peer-seen') {
+    const body = await readJson(req);
+    const peer = discovery.recordPeerSeen(body ?? {});
+    return sendJson(res, 200, { ok: true, peer });
+  }
+  if (req.method === 'POST' && pathname === '/api/discovery/peer-gone') {
+    const body = await readJson(req);
+    const removed = discovery.recordPeerGone(body ?? {});
+    return sendJson(res, 200, { ok: true, removed });
+  }
 
   // ─── Files ──────────────────────────────────────────────
   if (req.method === 'GET' && pathname.startsWith('/api/files/') && pathname.endsWith('/download')) {

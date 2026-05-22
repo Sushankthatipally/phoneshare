@@ -3,7 +3,7 @@ import type { PairingState, SessionState, TransferMode } from './session.js';
 import type {
   BackendSettings,
   ClipboardState,
-  DiscoveryDeviceRecord,
+  DiscoveryUpdatePayload,
   LiveSessionRecord,
   LiveTransferDirection,
   PendingTransferBatch,
@@ -195,10 +195,6 @@ export interface PeerDisconnectedPayload {
 
 export interface ClipboardUpdatedPayload {
   clipboard: ClipboardState;
-}
-
-export interface DiscoveryUpdatePayload {
-  devices: DiscoveryDeviceRecord[];
 }
 
 export interface WatchFolderFiredPayload {

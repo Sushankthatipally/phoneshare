@@ -49,6 +49,45 @@ export interface DiscoveryDeviceRecord {
   seenAt: string;
   expiresAt: string;
   local: boolean;
+  transports?: string[];
+  version?: string;
+  label?: string;
+}
+
+export interface DiscoveryStatus {
+  enabled: boolean;
+  serviceType: string;
+  advertiseHost: string;
+  servicePort: number;
+  peerCount: number;
+}
+
+export interface DiscoveryUpdatePayload {
+  items: DiscoveryDeviceRecord[];
+  status: DiscoveryStatus;
+}
+
+export interface ManualAddDiscoveryRequest {
+  host: string;
+  port: number;
+  label?: string;
+}
+
+export interface PeerSeenRequest {
+  fullname?: string;
+  id?: string;
+  name?: string;
+  icon?: DeviceIcon;
+  host: string;
+  port?: number;
+  addresses?: string[];
+  transports?: string[];
+  version?: string;
+}
+
+export interface PeerGoneRequest {
+  fullname?: string;
+  id?: string;
 }
 
 export type LiveTransferDirection = 'desktop-to-phone' | 'phone-to-desktop';
