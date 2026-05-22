@@ -129,6 +129,16 @@ class DropBeamAndroidModule : Module() {
             }
             promise.resolve(true)
         }
+
+        AsyncFunction("stopBackgroundReceive") { promise: Promise ->
+            try {
+                val intent = Intent(context, IncomingTransferService::class.java)
+                context.stopService(intent)
+                promise.resolve(true)
+            } catch (error: Throwable) {
+                promise.reject("STOP_FAILED", error.message ?: "Failed to stop foreground service", error)
+            }
+        }
     }
 
     private fun ensureChannel(): String {

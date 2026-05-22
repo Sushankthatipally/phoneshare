@@ -27,12 +27,6 @@ type Screen =
   | 'hotspot'
   | 'share-sheet';
 
-const SAMPLE_INCOMING_FILES = [
-  { id: '1', name: 'vacation.jpg', sizeLabel: '2.4 MB' },
-  { id: '2', name: 'video.mp4', sizeLabel: '847 MB' },
-  { id: '3', name: 'report.pdf', sizeLabel: '1.1 MB' },
-];
-
 const SAMPLE_TARGETS = [
   { id: 'mac', name: 'MacBook Pro', lastUsed: '2 minutes ago' },
   { id: 'pixel', name: 'Pixel 8 Pro', lastUsed: 'yesterday' },
@@ -88,15 +82,7 @@ export function MobileApp({ initialScreen = 'home' }: { initialScreen?: Screen }
       {screen === 'receive' ? <ReceiveScreen backend={backend} /> : null}
       {screen === 'send' ? <SendScreen backend={backend} /> : null}
       {screen === 'history' ? <HistoryScreen backend={backend} /> : null}
-      {screen === 'incoming' ? (
-        <IncomingScreen
-          sender="MacBook Pro"
-          files={SAMPLE_INCOMING_FILES}
-          onAcceptAll={() => setScreen('home')}
-          onAcceptSome={() => setScreen('home')}
-          onDecline={() => setScreen('home')}
-        />
-      ) : null}
+      {screen === 'incoming' ? <IncomingScreen /> : null}
       {screen === 'hotspot' ? (
         <HotspotJoinScreen
           ssid="DropBeam-K7MX2P"
