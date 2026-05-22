@@ -1,14 +1,30 @@
 import type { FileDescriptor } from './packets.js';
 import type { DeviceKind, TransferMode } from './session.js';
 
-export interface PairingPayload {
+export type PairingTransport = 'usb' | 'wifi' | 'hotspot';
+
+export interface DirectPairingPayload {
+  mode: 'usb' | 'wifi';
   sessionId: string;
-  transport: Exclude<TransferMode, 'hotspot'>;
+  transport: Exclude<PairingTransport, 'hotspot'>;
   host: string;
   port: number;
   publicKey: string;
   expiresAt: string;
 }
+
+export interface HotspotPairingPayload {
+  mode: 'hotspot';
+  sessionId: string;
+  ssid: string;
+  password: string;
+  host: string;
+  port: number;
+  publicKey: string;
+  expiresAt: number;
+}
+
+export type PairingPayload = DirectPairingPayload | HotspotPairingPayload;
 
 export type DeviceIcon = 'desktop' | 'laptop' | 'phone' | 'tablet';
 
@@ -77,7 +93,7 @@ export interface UploadCheckpoint {
   totalSize: number;
   receivedBytes: number;
   totalChunks: number;
-  nextChunkIndex: number;
+  nextChunk: number;
   file?: StoredFileRecord;
 }
 
@@ -347,6 +363,58 @@ export interface UpdateClipboardRequest {
 export interface BackendEventEnvelope<T = unknown> {
   type: string;
   payload: T;
+}
+
+export interface PinVerificationRequest {
+  sessionId: string;
+  pin: string;
+  deviceFingerprint: string;
+}
+
+export interface PinVerificationResponse {
+  ok: boolean;
+  attemptsRemaining?: number;
+  locked?: boolean;
+}
+
+export interface ResumeToken {
+  uploadId: string;
+  nextChunk: number;
+  fingerprint: string;
+  createdAt: number;
+}
+
+export interface FolderTransferOptions {
+  mode: 'zip' | 'stream';
+  preserveStructure: boolean;
+  maxDepth?: number;
+}
+
+export interface BenchmarkResult {
+  peerFingerprint: string;
+  throughputMBps: number;
+  latencyMs: number;
+  transport: 'wifi' | 'usb' | 'hotspot';
+  ranAt: number;
+}
+
+export interface CreateGuestShareRequest {
+  files: string[];
+  maxUses?: number;
+  expiresInSec?: number;
+  password?: string;
+}
+
+export interface MultiDeviceSlot {
+  slotId: number;
+  deviceFingerprint?: string;
+  deviceName?: string;
+  status: 'open' | 'pending' | 'connected' | 'denied';
+}
+
+export interface ReconnectToKnownDeviceRequest {
+  fingerprint: string;
+  preferTransport?: 'wifi' | 'usb' | 'hotspot';
 }
 
 export function formatBytes(bytes: number): string {
