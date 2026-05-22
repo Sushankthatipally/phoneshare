@@ -10,6 +10,18 @@ export interface PairingPayload {
   expiresAt: string;
 }
 
+export interface HotspotPairingPayload {
+  mode: 'hotspot';
+  sessionId: string;
+  ssid: string;
+  password: string;
+  host: string;
+  port: number;
+  publicKey: string;
+  expiresAt: string;
+  band?: '2.4GHz' | '5GHz' | null;
+}
+
 export type DeviceIcon = 'desktop' | 'laptop' | 'phone' | 'tablet';
 
 export interface SessionTicket {
@@ -18,6 +30,30 @@ export interface SessionTicket {
   pairingUrl: string;
   guestAllowed?: boolean;
   expiresAt?: string | null;
+  hotspot?: HotspotPairingPayload | null;
+}
+
+export type MultiDeviceSlotStatus = 'open' | 'pending' | 'connected' | 'denied';
+
+export interface MultiDeviceSlot {
+  index: number;
+  status: MultiDeviceSlotStatus;
+  device?: {
+    name: string;
+    platform: string;
+    icon?: DeviceIcon | null;
+    fingerprint?: string | null;
+  } | null;
+  pendingRequestId?: string | null;
+  connectedAt?: string | null;
+  deniedAt?: string | null;
+  deniedReason?: string | null;
+}
+
+export interface MultiDeviceSession {
+  multiDevice: true;
+  maxDevices: number;
+  slots: MultiDeviceSlot[];
 }
 
 export interface DiscoveryDeviceRecord {
@@ -156,6 +192,16 @@ export interface LiveSessionRecord {
   summary: LiveSessionSummary;
   closedReason?: string | null;
   eventCount: number;
+  slots?: MultiDeviceSlot[];
+  awaitingKnownDevice?: { fingerprint: string } | null;
+  connectedDevices?: Array<{
+    slotIndex: number;
+    name: string;
+    platform: string;
+    icon?: DeviceIcon | null;
+    fingerprint?: string | null;
+    connectedAt: string;
+  }>;
 }
 
 export interface HistoryEntry {
@@ -313,6 +359,31 @@ export interface CreateSessionRequest {
   backendOrigin?: string;
   multiDevice?: boolean;
   maxDevices?: number;
+  hotspot?: {
+    ssid: string;
+    password: string;
+    band?: '2.4GHz' | '5GHz' | null;
+  };
+}
+
+export interface ReconnectToKnownDeviceRequest {
+  preferTransport?: 'wifi' | 'usb' | 'hotspot';
+  deviceName?: string;
+  deviceIcon?: DeviceIcon;
+  origin?: string;
+  backendOrigin?: string;
+}
+
+export interface ReconnectToKnownDeviceResponse {
+  session: LiveSessionRecord;
+  ticket: SessionTicket;
+  knownDevice: KnownDeviceRecord;
+}
+
+export interface SessionFullError {
+  error: 'session-full';
+  maxDevices: number;
+  connectedDevices: number;
 }
 
 export interface PairSessionRequest {
