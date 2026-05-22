@@ -1,24 +1,46 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
 :root {
+  /* color */
+  --color-bg: #000000;
   --db-bg: #000000;
+  --color-panel-bg: rgba(12, 12, 12, 0.96);
   --db-panel-bg: rgba(12, 12, 12, 0.96);
+  --color-panel-bg-strong: rgba(8, 8, 8, 0.98);
   --db-panel-bg-strong: rgba(8, 8, 8, 0.98);
+  --color-panel-border: rgba(255, 255, 255, 0.12);
   --db-panel-border: rgba(255, 255, 255, 0.12);
+  --color-panel-border-strong: rgba(255, 255, 255, 0.18);
   --db-panel-border-strong: rgba(255, 255, 255, 0.18);
+  --color-text: #f4f4f4;
   --db-text: #f4f4f4;
+  --color-text-soft: rgba(255, 255, 255, 0.68);
   --db-text-soft: rgba(255, 255, 255, 0.68);
+  --color-text-dim: rgba(255, 255, 255, 0.48);
   --db-text-dim: rgba(255, 255, 255, 0.48);
+  --color-blue: #c6e3ff;
   --db-blue: #c6e3ff;
+  --color-green: #c7ffd4;
   --db-green: #c7ffd4;
+  --color-amber: #ffe2a8;
   --db-amber: #ffe2a8;
+  /* radius */
+  --radius-xl: 10px;
   --db-radius-xl: 10px;
+  --radius-lg: 8px;
   --db-radius-lg: 8px;
+  --radius-md: 6px;
   --db-radius-md: 6px;
+  --radius-sm: 4px;
   --db-radius-sm: 4px;
-  --db-shadow: 0 18px 40px rgba(0, 0, 0, 0.35);
+  /* font */
+  --font-sans: "Inter", "Segoe UI", "Helvetica Neue", system-ui, -apple-system, sans-serif;
   --db-font: "Inter", "Segoe UI", "Helvetica Neue", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
   --db-font-mono: "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
+  /* shadow */
+  --shadow-default: 0 18px 40px rgba(0, 0, 0, 0.35);
+  --db-shadow: 0 18px 40px rgba(0, 0, 0, 0.35);
 }
 
 .db-panel {
