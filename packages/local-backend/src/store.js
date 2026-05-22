@@ -968,6 +968,10 @@ export class LocalBackendStore {
     const token = randomUUID().replace(/-/g, '').slice(0, 20);
     const ttlMs = Number(input.ttlMs) || GUEST_TTL_MS;
     const maxUses = Number(input.maxUses) || 1;
+    // Optional human-readable label for the sharer, displayed in the guest browser. We never
+    // fabricate one — if neither the request nor the device settings provides a name, the
+    // guest page renders without it. Trusts the caller to supply a real device name only.
+    const sharerName = sanitizeText(input.sharerName) ?? sanitizeText(this.settings?.deviceName) ?? null;
     const share = {
       id,
       token,
@@ -976,6 +980,7 @@ export class LocalBackendStore {
       maxUses,
       uses: 0,
       files: [],
+      sharerName,
     };
     this.guestShares.set(token, share);
     await this.persist();
