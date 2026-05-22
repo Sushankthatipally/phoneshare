@@ -5,16 +5,29 @@
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
+  "react-native": "./src/rn.ts",
   "exports": {
     ".": "./src/index.ts"
   },
+  "sideEffects": ["./src/rn.ts"],
   "files": [
     "src"
   ],
   "scripts": {
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "peerDependencies": {
+    "react-native-quick-crypto": ">=0.7.0"
+  },
+  "peerDependenciesMeta": {
+    "react-native-quick-crypto": {
+      "optional": true
+    }
   },
   "devDependencies": {
-    "typescript": "latest"
+    "@vitest/coverage-v8": "^2.0.0",
+    "typescript": "latest",
+    "vitest": "^2.0.0"
   }
 }

@@ -6,12 +6,16 @@ import type {
   CreateSessionRequest,
   DiscoveryDeviceRecord,
   DashboardResponse,
+  GuestShareSummary,
   HistoryEntry,
+  KnownDeviceRecord,
   LiveSessionRecord,
   LiveTransferDirection,
   PairSessionRequest,
+  PendingTransferBatch,
   SecureDownloadPayload,
   StoredFileRecord,
+  TrustedDeviceRecord,
   UpdateClipboardRequest,
   UpdateSettingsRequest,
   UploadSessionRecord,
@@ -24,7 +28,7 @@ import {
   generateKeyAgreement,
   importSessionKey,
   type SessionKeyMaterial,
-} from './native-crypto.js';
+} from '@dropbeam/crypto-core';
 
 interface OkEnvelope<T> {
   ok: boolean;
@@ -141,6 +145,113 @@ export class DropbeamBackendClient {
       }
       throw error;
     }
+  }
+
+  acceptSession(sessionId: string, trust = false) {
+    return this.request<{ session: LiveSessionRecord }>(
+      `/api/sessions/${encodeURIComponent(sessionId)}/accept`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ trust }),
+        headers: { 'Content-Type': 'application/json' },
+      },
+    ).then((response) => response.session);
+  }
+
+  declineSession(sessionId: string, reason?: string) {
+    return this.request<{ session: LiveSessionRecord }>(
+      `/api/sessions/${encodeURIComponent(sessionId)}/decline`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ reason }),
+        headers: { 'Content-Type': 'application/json' },
+      },
+    ).then((response) => response.session);
+  }
+
+  regenerateSession(sessionId: string) {
+    return this.request<{ session: LiveSessionRecord }>(
+      `/api/sessions/${encodeURIComponent(sessionId)}/regenerate`,
+      { method: 'POST' },
+    ).then((response) => response.session);
+  }
+
+  trustedDevices() {
+    return this.request<{ items: TrustedDeviceRecord[] }>('/api/trusted-devices').then((r) => r.items);
+  }
+
+  knownDevices() {
+    return this.request<{ items: KnownDeviceRecord[] }>('/api/known-devices').then((r) => r.items);
+  }
+
+  setTrustedDevice(fingerprint: string, autoAccept = true) {
+    return this.request<{ trusted: TrustedDeviceRecord }>(
+      `/api/trusted-devices/${encodeURIComponent(fingerprint)}`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ autoAccept }),
+        headers: { 'Content-Type': 'application/json' },
+      },
+    ).then((r) => r.trusted);
+  }
+
+  removeTrustedDevice(fingerprint: string) {
+    return this.request<{ ok: boolean }>(`/api/trusted-devices/${encodeURIComponent(fingerprint)}`, {
+      method: 'DELETE',
+    });
+  }
+
+  createGuestShare(input: { ttlMs?: number; maxUses?: number }) {
+    return this.request<{
+      share: GuestShareSummary & { token: string };
+      lanUrl?: string | null;
+      lanOrigin?: string | null;
+    }>('/api/guest', {
+      method: 'POST',
+      body: JSON.stringify(input),
+      headers: { 'Content-Type': 'application/json' },
+    }).then((r) => ({ ...r.share, lanUrl: r.lanUrl ?? null, lanOrigin: r.lanOrigin ?? null }));
+  }
+
+  async addGuestFile(token: string, file: File) {
+    const meta = JSON.stringify({ name: file.name, mimeType: file.type || 'application/octet-stream' });
+    const response = await fetch(`${this.origin}/api/guest/${encodeURIComponent(token)}/files`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': file.type || 'application/octet-stream',
+        'X-File-Meta': encodeURIComponent(meta),
+      },
+      body: file,
+    });
+    return this.readJson<{ file: { id: string; name: string; size: number } }>(response).then((r) => r.file);
+  }
+
+  guestUrl(token: string) {
+    return `${this.origin}/guest/${encodeURIComponent(token)}`;
+  }
+
+  async benchmarkSend(bytes = 4 * 1024 * 1024) {
+    const buffer = new Uint8Array(bytes);
+    const start = performance.now();
+    const response = await fetch(`${this.origin}/api/benchmark/echo`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: buffer,
+    });
+    const json = (await response.json()) as { ok: boolean; bytesPerSecond: number; durationMs: number };
+    const rtt = performance.now() - start;
+    return { bytesPerSecond: json.bytesPerSecond, durationMs: json.durationMs, roundTripMs: Math.round(rtt) };
+  }
+
+  async benchmarkReceive(bytes = 4 * 1024 * 1024) {
+    const start = performance.now();
+    const response = await fetch(`${this.origin}/api/benchmark/blob?bytes=${bytes}`);
+    const blob = await response.blob();
+    const ms = performance.now() - start;
+    return {
+      bytesPerSecond: ms > 0 ? Math.round((blob.size / ms) * 1000) : 0,
+      durationMs: Math.round(ms),
+    };
   }
 
   closeSession(sessionId: string, reason?: string) {
@@ -296,8 +407,22 @@ export class DropbeamBackendClient {
   }
 
   private async request<T>(path: string, init?: RequestInit) {
-    const response = await fetch(`${this.origin}${path}`, init);
-    return this.readJson<T>(response);
+    const controller = new AbortController();
+    const timeoutHandle = setTimeout(() => controller.abort(), 8000);
+    try {
+      const response = await fetch(`${this.origin}${path}`, {
+        ...init,
+        signal: init?.signal ?? controller.signal,
+      });
+      return this.readJson<T>(response);
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') {
+        throw new Error(`Backend at ${this.origin} did not respond within 8s. Is the sidecar running?`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeoutHandle);
+    }
   }
 
   private async readJson<T>(response: Response) {
@@ -316,13 +441,26 @@ export function resolveBackendOrigin(override?: string) {
     return override.replace(/\/+$/, '');
   }
 
-  if (typeof window !== 'undefined') {
-    const protocol = window.location.protocol || 'http:';
-    const hostname = window.location.hostname || 'localhost';
-    return `${protocol}//${hostname}:17619`;
+  if (typeof window === 'undefined') {
+    return 'http://127.0.0.1:17619';
   }
 
-  return 'http://127.0.0.1:17619';
+  // Inside the Tauri webview the page is served from tauri://localhost or
+  // https://tauri.localhost. The Rust backend listens on plain HTTP loopback,
+  // so always force http://127.0.0.1:17619 from within the Tauri shell.
+  const tauriBridge =
+    (window as Window & { __TAURI__?: unknown; __TAURI_INTERNALS__?: unknown }).__TAURI__ ??
+    (window as Window & { __TAURI__?: unknown; __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+  const tauriProtocol =
+    window.location.protocol === 'tauri:' ||
+    window.location.protocol === 'https:' && window.location.hostname.endsWith('tauri.localhost');
+  if (tauriBridge || tauriProtocol) {
+    return 'http://127.0.0.1:17619';
+  }
+
+  const protocol = window.location.protocol || 'http:';
+  const hostname = window.location.hostname || 'localhost';
+  return `${protocol}//${hostname}:17619`;
 }
 
 type StoredSessionKey = {

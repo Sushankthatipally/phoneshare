@@ -2,7 +2,7 @@ const AES_NONCE_BYTES = 12;
 const AES_GCM_ALGORITHM = 'AES-GCM';
 const X25519_ALGORITHM = { name: 'X25519' } as const;
 
-export type PairingTransport = 'usb' | 'wifi';
+export type PairingTransport = 'usb' | 'wifi' | 'hotspot';
 
 export interface PairingPayload {
   sessionId: string;
@@ -11,6 +11,10 @@ export interface PairingPayload {
   port: number;
   publicKey: string;
   expiresAt: string;
+  /** SSID for hotspot pairing mode — present only when transport === 'hotspot' */
+  ssid?: string;
+  /** Password for hotspot pairing mode — present only when transport === 'hotspot' */
+  password?: string;
 }
 
 export interface PairingSeed {
@@ -224,6 +228,40 @@ export async function importSessionKey(input: {
     cryptoKey,
     rawKey,
   };
+}
+
+/**
+ * Derive a 6-digit short-authentication-string (SAS) PIN from the shared
+ * secret + session id. Both peers compute the same PIN deterministically.
+ */
+export async function derivePinCode(
+  sharedSecret: ArrayBuffer | Uint8Array,
+  sessionId: string,
+): Promise<string> {
+  const secret = sharedSecret instanceof Uint8Array ? sharedSecret : new Uint8Array(sharedSecret);
+  const ikm = secret;
+  const salt = new TextEncoder().encode(sessionId);
+  const info = new TextEncoder().encode('dropbeam-sas-v1');
+  const derivedBits = await hkdfSha256(ikm, salt, info, 4); // 4 bytes = 32 bits
+  const view = new DataView(derivedBits.buffer, derivedBits.byteOffset, derivedBits.byteLength);
+  const value = view.getUint32(0, false); // big-endian
+  // 6 digits, zero-padded. Mod 1_000_000 gives uniform distribution over [0, 999999]
+  return (value % 1_000_000).toString().padStart(6, '0');
+}
+
+/**
+ * Constant-time string equality comparison for SAS PIN codes.
+ * Prevents timing attacks when comparing PINs.
+ */
+export function compareSasConstantTime(a: string, b: string): boolean {
+  if (a.length !== b.length) {
+    return false;
+  }
+  let result = 0;
+  for (let i = 0; i < a.length; i++) {
+    result |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return result === 0;
 }
 
 async function hkdfSha256(
