@@ -9,6 +9,7 @@ import type {
   GuestShareSummary,
   HistoryEntry,
   KnownDeviceRecord,
+  LanIpsResponse,
   LiveSessionRecord,
   LiveTransferDirection,
   PairSessionRequest,
@@ -62,6 +63,13 @@ export class DropbeamBackendClient {
 
   discovery() {
     return this.request<{ items: DiscoveryDeviceRecord[] }>('/api/discovery').then((response) => response.items);
+  }
+
+  lanIps() {
+    return this.request<LanIpsResponse & { ok: boolean }>('/api/discovery/lan-ips').then(({ preferred, candidates }) => ({
+      preferred,
+      candidates,
+    }));
   }
 
   clipboard() {

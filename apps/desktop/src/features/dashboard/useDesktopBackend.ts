@@ -285,6 +285,7 @@ export function useDesktopBackend() {
     guestUrl: client.guestUrl.bind(client),
     benchmarkSend: client.benchmarkSend.bind(client),
     benchmarkReceive: client.benchmarkReceive.bind(client),
+    lanIps: client.lanIps.bind(client),
     refresh,
     regenerateSession,
     removeTrusted,

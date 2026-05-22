@@ -9,7 +9,7 @@ import { pipeline } from 'node:stream/promises';
 import { randomBytes } from 'node:crypto';
 
 import { resolveBackendConfig } from './config.js';
-import { BackendDiscoveryService } from './discovery.js';
+import { BackendDiscoveryService, getPreferredLanOrigin } from './discovery.js';
 import { LocalBackendStore } from './store.js';
 
 const { dataDir, host, port } = resolveBackendConfig();
@@ -206,6 +206,9 @@ async function handleRequest(req, res) {
   // ─── Discovery ──────────────────────────────────────────
   if (req.method === 'GET' && pathname === '/api/discovery') {
     return sendJson(res, 200, { ok: true, items: discovery.listPeers(), status: discovery.status() });
+  }
+  if (req.method === 'GET' && pathname === '/api/discovery/lan-ips') {
+    return sendJson(res, 200, { ok: true, ...getPreferredLanOrigin({ port }) });
   }
 
   // ─── Files ──────────────────────────────────────────────

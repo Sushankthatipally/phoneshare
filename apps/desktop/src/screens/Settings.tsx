@@ -4,9 +4,10 @@ import { Badge, Button } from '@dropbeam/shared-ui';
 import { formatBytes } from '@dropbeam/protocol';
 
 import type { DesktopBackendState } from '../features/dashboard/useDesktopBackend.js';
+import { Diagnostics } from './Diagnostics.js';
 
 type DeviceIcon = 'desktop' | 'laptop' | 'phone' | 'tablet';
-type Tab = 'identity' | 'trusted' | 'watch' | 'benchmark';
+type Tab = 'identity' | 'trusted' | 'watch' | 'benchmark' | 'diagnostics';
 
 export function Settings({ backend }: { backend: DesktopBackendState }) {
   const [tab, setTab] = useState<Tab>('identity');
@@ -30,9 +31,17 @@ export function Settings({ backend }: { backend: DesktopBackendState }) {
   return (
     <>
       <div className="tabs">
-        {(['identity', 'trusted', 'watch', 'benchmark'] as Tab[]).map((t) => (
+        {(['identity', 'trusted', 'watch', 'benchmark', 'diagnostics'] as Tab[]).map((t) => (
           <button key={t} className={`tab${tab === t ? ' tab--active' : ''}`} onClick={() => setTab(t)} type="button">
-            {t === 'identity' ? 'Identity' : t === 'trusted' ? 'Trusted devices' : t === 'watch' ? 'Watch folders' : 'Benchmark'}
+            {t === 'identity'
+              ? 'Identity'
+              : t === 'trusted'
+                ? 'Trusted devices'
+                : t === 'watch'
+                  ? 'Watch folders'
+                  : t === 'benchmark'
+                    ? 'Benchmark'
+                    : 'Diagnostics'}
           </button>
         ))}
       </div>
@@ -172,6 +181,8 @@ export function Settings({ backend }: { backend: DesktopBackendState }) {
       {tab === 'watch' ? <WatchFoldersSection backend={backend} /> : null}
 
       {tab === 'benchmark' ? <BenchmarkSection backend={backend} /> : null}
+
+      {tab === 'diagnostics' ? <Diagnostics backend={backend} /> : null}
     </>
   );
 }

@@ -1,7 +1,11 @@
 // On release builds, run as a true Windows GUI app so no console window appears.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod diagnostics;
+mod mdns;
 mod notify_shell;
+mod usb_android;
+mod usb_ios;
 mod watcher;
 
 use std::{
@@ -17,6 +21,11 @@ use tauri_plugin_shell::{
     process::{CommandChild, CommandEvent},
     ShellExt,
 };
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+
+use diagnostics::{log_bridge, BridgeLayer};
+use mdns::MdnsRegistry;
+use usb_android::UsbAndroidBridge;
 
 /// Files passed in via `dropbeam-desktop.exe --send <path> [--send <path>]...`
 /// (the Windows context-menu invocation). Held in app state so the JS layer
@@ -51,6 +60,9 @@ fn main() {
 
     let send_paths = parse_send_paths(env::args().collect());
 
+    let usb_android_bridge =
+        UsbAndroidBridge::new(env::var("DROPBEAM_ADB").unwrap_or_else(|_| "adb".to_string()), 17619, 17619);
+
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
@@ -59,6 +71,9 @@ fn main() {
         .manage(watcher::WatcherState::new())
         .manage(PendingSend(Mutex::new(send_paths.clone())))
         .manage(BackendChild(Mutex::new(None)))
+        .manage(MdnsRegistry::new())
+        .manage(usb_android_bridge)
+        .manage(log_bridge().buffer())
         .invoke_handler(tauri::generate_handler![
             watcher::start_watch_folder,
             watcher::stop_watch_folder,
@@ -66,10 +81,16 @@ fn main() {
             notify_shell::system_notify,
             notify_shell::register_context_menu,
             notify_shell::unregister_context_menu,
+            mdns::mdns_status,
+            diagnostics::firewall_check_ports,
+            diagnostics::diagnostics_log_snapshot,
+            diagnostics::usb_android_status,
+            diagnostics::run_diagnose_script,
             get_pending_send_paths,
             clear_pending_send_paths,
         ])
         .setup(move |app| {
+            log_bridge().attach(app.handle().clone());
             spawn_backend_sidecar(app)?;
 
             // Notify the frontend about any files passed via context menu.
@@ -177,9 +198,12 @@ fn parse_send_paths(args: Vec<String>) -> Vec<String> {
 
 fn install_tracing() {
     let filter = env::var("DROPBEAM_LOG").unwrap_or_else(|_| "info,tower_http=info".to_string());
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
+    let fmt_layer = tracing_subscriber::fmt::layer()
         .with_target(false)
-        .compact()
+        .compact();
+    tracing_subscriber::registry()
+        .with(EnvFilter::new(filter))
+        .with(fmt_layer)
+        .with(BridgeLayer)
         .init();
 }

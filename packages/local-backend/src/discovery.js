@@ -261,3 +261,38 @@ function scoreInterface(name, address) {
 
   return score;
 }
+
+// Rank every non-internal IPv4 candidate and return both the winner and the full
+// sorted list. Each entry is shaped so the Diagnostics UI can show why a
+// particular IP was picked (interface name + numeric score).
+export function getPreferredLanOrigin({ port } = {}) {
+  const advertisePort = Number(port) || Number(process.env.DROPBEAM_BACKEND_PORT) || 17619;
+  const interfaces = os.networkInterfaces();
+  const candidates = [];
+
+  for (const [name, items] of Object.entries(interfaces)) {
+    for (const item of items ?? []) {
+      if (item.family !== 'IPv4' || item.internal || !item.address) continue;
+      candidates.push({
+        host: item.address,
+        interface: name,
+        score: scoreInterface(name, item.address),
+        origin: `http://${item.address}:${advertisePort}`,
+      });
+    }
+  }
+
+  candidates.sort((left, right) => right.score - left.score);
+
+  const fallback = {
+    host: '127.0.0.1',
+    interface: 'loopback',
+    score: -1000,
+    origin: `http://127.0.0.1:${advertisePort}`,
+  };
+
+  return {
+    preferred: candidates[0] ?? fallback,
+    candidates: candidates.length ? candidates : [fallback],
+  };
+}
