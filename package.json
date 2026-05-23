@@ -13,7 +13,11 @@
   "pnpm": {
     "onlyBuiltDependencies": [
       "esbuild"
-    ]
+    ],
+    "overrides": {
+      "@craftzdog/react-native-buffer": "6.0.5",
+      "react-native-quick-base64": "2.1.2"
+    }
   },
   "devDependencies": {
     "turbo": "latest",

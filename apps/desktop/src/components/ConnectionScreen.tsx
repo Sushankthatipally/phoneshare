@@ -26,20 +26,22 @@ export function ConnectionScreen({ backend, choice, existingSessionId, reconnect
   useEffect(() => {
     if (createdRef.current) return;
     createdRef.current = true;
-    let cancelled = false;
-    (async () => {
-      const session = await backend.createSession({
+    // No cancel guard: under React 18 StrictMode, the first effect's cleanup
+    // fires before the async createSession resolves, so a `cancelled` flag
+    // would drop the setSessionId call. The backend session was already
+    // created, so we must record its id regardless.
+    void backend
+      .createSession({
         mode: choice === 'usb' ? 'usb' : choice === 'hotspot' ? 'hotspot' : 'wifi',
         multiDevice: choice === 'multi',
+      })
+      .then((session) => {
+        if (session) setSessionId(session.id);
       });
-      if (!cancelled && session) setSessionId(session.id);
-    })();
-    return () => {
-      cancelled = true;
-    };
   }, [backend, choice]);
 
   const session = backend.sessions.find((s) => s.id === sessionId) ?? null;
+  console.info('[dropbeam] ConnectionScreen render — sessionId=', sessionId, 'foundSession=', session?.id ?? null, 'state=', session?.state, 'hasQR=', Boolean(session?.pairing?.ticket?.qrValue), 'totalSessions=', backend.sessions.length);
 
   useEffect(() => {
     if (choice !== 'usb') return;
@@ -71,6 +73,7 @@ export function ConnectionScreen({ backend, choice, existingSessionId, reconnect
           onRegenerate={(id) => void backend.regenerateSession(id)}
           onCopy={(value) => void navigator.clipboard?.writeText?.(value)}
           onCloseAndReset={closeAndReset}
+          backend={backend}
         />
       )}
 
@@ -108,7 +111,7 @@ export function ConnectionScreen({ backend, choice, existingSessionId, reconnect
 function renderTitle(choice: ConnectionChoice, session: LiveSessionRecord | null) {
   if (session?.lockedAt) return 'Session locked';
   if (session?.state === 'paired' || session?.pairing.verifiedAt) return 'Connected';
-  if (session?.state === 'pin-required') return 'Enter on your phone';
+  if (session?.state === 'awaiting-accept') return 'Phone wants to connect';
   if (choice === 'wifi') return 'Scan this QR with your phone';
   if (choice === 'usb') return 'Plug your phone into this computer';
   if (choice === 'hotspot') return 'Have your phone join this hotspot';
@@ -144,11 +147,13 @@ function WifiContent({
   onRegenerate,
   onCopy,
   onCloseAndReset,
+  backend,
 }: {
   session: LiveSessionRecord | null;
   onRegenerate: (sessionId: string) => void;
   onCopy: (value: string) => void;
   onCloseAndReset: () => void;
+  backend: DesktopBackendState;
 }) {
   if (!session) return <div className="connection"><span className="connection__pulse">Creating session…</span></div>;
 
@@ -160,8 +165,25 @@ function WifiContent({
     return <PairedView session={session} />;
   }
 
-  if (session.state === 'pin-required' && session.pairing.pin) {
-    return <PinDisplay session={session} onCloseAndReset={onCloseAndReset} />;
+  // Phone scanned the QR and POSTed /connect — show Accept/Decline inline so
+  // the user doesn't have to dismiss the modal to find the banner.
+  if (session.state === 'awaiting-accept' && session.pendingRequest) {
+    const request = session.pendingRequest;
+    return (
+      <div className="connection">
+        <p className="card__copy">
+          <strong>{request.peer.name}</strong> wants to connect ({request.peer.platform})
+        </p>
+        <div className="topbar__actions">
+          <Button onClick={() => void backend.declineIncoming(session.id)} variant="ghost">
+            Decline
+          </Button>
+          <Button onClick={() => void backend.acceptIncoming(session.id, true)} variant="primary">
+            Accept
+          </Button>
+        </div>
+      </div>
+    );
   }
 
   return (

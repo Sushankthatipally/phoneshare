@@ -54,6 +54,30 @@ function tryParseJson(raw: string): unknown {
   }
 }
 
+/** Desktop emits `http://host:port/pair/<id>#pair=<URL-encoded JSON>`. Extract the JSON. */
+function tryParsePairUrl(raw: string): unknown {
+  const trimmed = raw.trim();
+  if (!/^https?:\/\//i.test(trimmed)) return null;
+  const hashIdx = trimmed.indexOf('#');
+  if (hashIdx < 0) return null;
+  const fragment = trimmed.slice(hashIdx + 1);
+  // Fragment is `pair=<encoded>` or `hotspot=<encoded>`; accept either key.
+  const eq = fragment.indexOf('=');
+  if (eq < 0) return null;
+  const encoded = fragment.slice(eq + 1);
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(encoded);
+  } catch {
+    return null;
+  }
+  try {
+    return JSON.parse(decoded);
+  } catch {
+    return null;
+  }
+}
+
 function isString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
 }
@@ -145,13 +169,29 @@ function parseHotspotJson(value: Record<string, unknown>): HotspotSessionPayload
 }
 
 export function parseSessionPayload(input: string): ParsedSessionPayload | null {
-  const json = tryParseJson(input);
-  if (json && typeof json === 'object') {
-    const obj = json as Record<string, unknown>;
+  console.info('[dropbeam] parseSessionPayload input (first 200 chars):', input.slice(0, 200));
+
+  // Try raw JSON first, then the pair-URL fragment format used by the desktop.
+  const candidate = tryParseJson(input) ?? tryParsePairUrl(input);
+  if (candidate && typeof candidate === 'object') {
+    const obj = candidate as Record<string, unknown>;
     const hotspot = parseHotspotJson(obj);
-    if (hotspot) return hotspot;
+    if (hotspot) {
+      console.info('[dropbeam] parsed as HOTSPOT', { sessionId: hotspot.payload.sessionId, host: hotspot.payload.host });
+      return hotspot;
+    }
     const direct = parseDirectJson(obj);
-    if (direct) return direct;
+    if (direct) {
+      console.info('[dropbeam] parsed as DIRECT', { sessionId: direct.payload.sessionId, host: direct.payload.host, port: direct.payload.port });
+      return direct;
+    }
+    console.warn('[dropbeam] JSON parsed but neither hotspot nor direct shape matched. Keys:', Object.keys(obj));
   }
-  return parseGuestUrl(input);
+  const guest = parseGuestUrl(input);
+  if (guest) {
+    console.info('[dropbeam] parsed as GUEST URL', { origin: guest.origin });
+  } else {
+    console.warn('[dropbeam] parseSessionPayload — no shape matched, returning null');
+  }
+  return guest;
 }

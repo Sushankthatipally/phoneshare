@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import JSZip from 'jszip';
 
 import { Badge, Button } from '@dropbeam/shared-ui';
-import { formatBytes } from '@dropbeam/protocol';
+import { formatBytes, resolveBackendOrigin } from '@dropbeam/protocol';
 
 import { Modal } from '../components/Modal.js';
 import type { DesktopBackendState } from '../features/dashboard/useDesktopBackend.js';
@@ -466,8 +466,77 @@ export function Send({
     async function uploadAll(sessionId: string, mode: 'wifi' | 'usb' | 'hotspot') {
       let completedBytes = 0;
       const failedFiles: string[] = [];
+
+      // Step 1: register a pending-transfer batch and wait for the phone to Accept.
+      setTargetState((current) => ({
+        ...current,
+        [sessionId]: { message: 'Waiting for phone to accept…', progress: 0, status: 'uploading', failedFiles },
+      }));
+
+      const origin = resolveBackendOrigin(import.meta.env.VITE_DROPBEAM_API);
+      let acceptedNames: Set<string>;
       try {
-        for (const file of queuedFiles) {
+        const batchRes = await fetch(`${origin}/api/sessions/${encodeURIComponent(sessionId)}/transfers`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            direction: 'desktop-to-phone',
+            deviceName: backend.settings?.deviceName ?? 'DropBeam Desktop',
+            files: queuedFiles.map((f) => ({
+              name: f.name,
+              size: f.size,
+              mimeType: f.type || 'application/octet-stream',
+              relativePath: getRelativePath(f),
+              lastModified: f.lastModified || Date.now(),
+            })),
+          }),
+        });
+        if (!batchRes.ok) throw new Error(`batch create failed (HTTP ${batchRes.status})`);
+        const batchJson = (await batchRes.json()) as { ok: boolean; batch: { id: string; files: Array<{ id: string; name: string }> } };
+        const batchId = batchJson.batch.id;
+        const namesById = new Map(batchJson.batch.files.map((f) => [f.id, f.name]));
+
+        acceptedNames = await new Promise<Set<string>>((resolveAccept, reject) => {
+          const unsub = backend.subscribeEvent((evt) => {
+            const payload = (evt as { type: string; payload?: { batchId?: string; fileIds?: string[] } }).payload ?? {};
+            if (payload.batchId !== batchId) return;
+            if (evt.type === 'transfer-accepted') {
+              unsub();
+              const ids = payload.fileIds ?? [];
+              const names = new Set(ids.map((id) => namesById.get(id)).filter((n): n is string => Boolean(n)));
+              resolveAccept(names);
+            } else if (evt.type === 'transfer-declined') {
+              unsub();
+              reject(new Error('Phone declined the transfer'));
+            }
+          });
+          // 5-minute safety timeout
+          setTimeout(() => { unsub(); reject(new Error('Phone did not respond in time')); }, 5 * 60 * 1000);
+        });
+      } catch (waitError) {
+        setTargetState((current) => ({
+          ...current,
+          [sessionId]: {
+            message: waitError instanceof Error ? waitError.message : 'Phone did not accept',
+            progress: 0,
+            status: 'failed',
+            failedFiles: queuedFiles.map((f) => f.name),
+          },
+        }));
+        return;
+      }
+
+      const filesToUpload = queuedFiles.filter((f) => acceptedNames.has(f.name));
+      if (!filesToUpload.length) {
+        setTargetState((current) => ({
+          ...current,
+          [sessionId]: { message: 'Phone declined all files', progress: 0, status: 'failed', failedFiles: queuedFiles.map((f) => f.name) },
+        }));
+        return;
+      }
+
+      try {
+        for (const file of filesToUpload) {
           try {
             await backend.uploadFile(
               sessionId,

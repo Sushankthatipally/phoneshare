@@ -29,7 +29,8 @@ export interface PairingSeed {
 
 export interface KeyAgreementMaterial {
   publicKey: string;
-  privateKey: CryptoKey;
+  // Web Crypto returns CryptoKey; the RN fallback stores raw private bytes.
+  privateKey: CryptoKey | Uint8Array;
 }
 
 export interface SessionKeyMaterial {
@@ -113,6 +114,9 @@ export async function deriveSessionKey(input: {
     false,
     [],
   );
+  if (!(input.keyAgreement.privateKey instanceof CryptoKey)) {
+    throw new Error('deriveSessionKey: expected CryptoKey private key (use the RN override on mobile)');
+  }
   const sharedSecret = new Uint8Array(
     await subtle.deriveBits(
       {
@@ -264,7 +268,7 @@ export function compareSasConstantTime(a: string, b: string): boolean {
   return result === 0;
 }
 
-async function hkdfSha256(
+export async function hkdfSha256(
   ikm: Uint8Array,
   salt: Uint8Array,
   info: Uint8Array,
@@ -300,11 +304,11 @@ function isCryptoKeyPair(value: CryptoKeyPair | CryptoKey): value is CryptoKeyPa
   return 'privateKey' in value && 'publicKey' in value;
 }
 
-function encodeUtf8(value: string) {
+export function encodeUtf8(value: string) {
   return new TextEncoder().encode(value);
 }
 
-function encodeBase64Url(bytes: Uint8Array) {
+export function encodeBase64Url(bytes: Uint8Array) {
   let binary = '';
 
   for (let index = 0; index < bytes.length; index += 0x8000) {
@@ -317,7 +321,7 @@ function encodeBase64Url(bytes: Uint8Array) {
     .replace(/=+$/g, '');
 }
 
-function decodeBase64Url(value: string) {
+export function decodeBase64Url(value: string) {
   const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
   const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4);
   const binary = atob(padded);
@@ -330,12 +334,12 @@ function decodeBase64Url(value: string) {
   return bytes;
 }
 
-function toHex(bytes: Uint8Array) {
+export function toHex(bytes: Uint8Array) {
   return Array.from(bytes)
     .map((value) => value.toString(16).padStart(2, '0'))
     .join('');
 }
 
-function toBufferSource(bytes: Uint8Array) {
+export function toBufferSource(bytes: Uint8Array) {
   return Uint8Array.from(bytes).buffer;
 }

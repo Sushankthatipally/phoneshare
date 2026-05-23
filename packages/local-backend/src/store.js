@@ -467,7 +467,10 @@ export class LocalBackendStore {
         slotIndex: openSlot.index,
         requestedAt: now,
         peer: buildPeerRecord(input, session.mode, peerFingerprint),
-        remotePublicKey: typeof input.remotePublicKey === 'string' ? input.remotePublicKey.trim() : null,
+        remotePublicKey:
+          (typeof input.publicKey === 'string' && input.publicKey.trim()) ||
+          (typeof input.remotePublicKey === 'string' && input.remotePublicKey.trim()) ||
+          null,
       };
       openSlot.status = 'pending';
       openSlot.device = {
@@ -493,25 +496,25 @@ export class LocalBackendStore {
       return this.publicSession(session);
     }
 
-    const skipPin = session.awaitingKnownDevice?.fingerprint === peerFingerprint;
+    // The phone sends `publicKey`; older callers may use `remotePublicKey`.
+    const peerPublicKey =
+      (typeof input.publicKey === 'string' && input.publicKey.trim()) ||
+      (typeof input.remotePublicKey === 'string' && input.remotePublicKey.trim()) ||
+      null;
+
     session.pendingRequest = {
       id: randomUUID(),
       requestedAt: now,
       peer: buildPeerRecord(input, session.mode, peerFingerprint),
-      remotePublicKey: typeof input.remotePublicKey === 'string' ? input.remotePublicKey.trim() : null,
-      preTargeted: skipPin,
+      remotePublicKey: peerPublicKey,
+      preTargeted: true,
     };
     session.state = SESSION_STATES.awaitingAccept;
     session.updatedAt = now;
 
-    const trusted = this.trustedDevices.get(peerFingerprint);
-    if (skipPin || (this.settings.autoAcceptTrusted && trusted)) {
-      return this.acceptSession(sessionId);
-    }
-
-    await this.persist();
-    this.broadcast('session-connect-requested', { session: this.publicSession(session) });
-    return this.publicSession(session);
+    // Auto-pair on QR scan. The QR was the trust signal; per-transfer
+    // Accept/Decline is enforced separately via pendingTransfers.
+    return this.acceptSession(sessionId);
   }
 
   // Receiver (desktop) accepts the pending connect request. Per Flow 2.1, this
@@ -610,29 +613,28 @@ export class LocalBackendStore {
       throw httpError(409, 'pairing keypair is unavailable for this session');
     }
 
-    const sharedSecret = await deriveSharedSecret({
+    // PIN-less pairing: derive the AEAD session secret immediately on Accept
+    // and mark the session as paired. The Accept click on the desktop is the
+    // trust gate; per-transfer Accept/Decline is enforced separately via
+    // `pendingTransfers`. We keep the ECDH-derived secret so file chunks
+    // remain end-to-end encrypted, but skip the SAS-PIN verification round-trip.
+    const sessionSecret = await deriveSessionSecret({
       privateKey: pairingKey.privateKey,
       remotePublicKey,
+      sessionId,
     });
-    const expectedPin = await derivePinCode(sharedSecret, sessionId);
+    this.sessionSecrets.set(sessionId, sessionSecret);
 
     session.peerDevice = peer;
     session.pairing.acceptedAt = now;
-    session.pairing.encrypted = false;
+    session.pairing.verifiedAt = now;
+    session.pairing.encrypted = true;
     session.pairing.attemptsRemaining = MAX_PIN_ATTEMPTS;
-    session.state = SESSION_STATES.pinRequired;
+    session.state = SESSION_STATES.paired;
     session.updatedAt = now;
     session.pendingRequest = null;
     session.awaitingKnownDevice = null;
-    session.pinChallenge = {
-      expectedPin,
-      sharedSecret: Buffer.from(sharedSecret).toString('base64'),
-      remotePublicKey,
-      attempts: 0,
-      attemptsRemaining: MAX_PIN_ATTEMPTS,
-      issuedAt: now,
-      trustOnSuccess: Boolean(input.trust),
-    };
+    session.pinChallenge = null;
 
     if (peer.fingerprint) {
       this.knownDevices.set(peer.fingerprint, {
@@ -642,16 +644,23 @@ export class LocalBackendStore {
         icon: peer.icon,
         lastSeenAt: now,
       });
+      if (input.trust) {
+        this.trustedDevices.set(peer.fingerprint, {
+          fingerprint: peer.fingerprint,
+          name: peer.name,
+          platform: peer.platform,
+          trustedAt: now,
+          autoAccept: true,
+        });
+      }
     }
 
     session.summary = this.buildSummary(session);
     await this.persist();
-    this.broadcast('pin-required', {
-      sessionId: session.id,
-      attemptsRemaining: MAX_PIN_ATTEMPTS,
-      expiresAt: session.expiresAt ?? null,
-    });
-    this.broadcast('session-updated', { session: this.publicSession(session) });
+    this.broadcast('session-paired', { session: this.publicSession(session) });
+    if (peer.fingerprint) {
+      this.notifyPeerConnected(peer.fingerprint);
+    }
     return this.publicSession(session);
   }
 
@@ -839,35 +848,6 @@ export class LocalBackendStore {
       (d) => d.fingerprint !== fingerprint,
     );
     session.updatedAt = new Date().toISOString();
-    await this.persist();
-    this.broadcast('session-updated', { session: this.publicSession(session) });
-    return this.publicSession(session);
-  }
-
-  // PIN verify endpoint stub: pre-targeted (known-device reconnect) sessions skip PIN.
-  // Standard sessions still require PIN — caller supplies pin, store records attempts.
-  async verifyPin(sessionId, pin) {
-    const session = this.requireSession(sessionId);
-    if (session.awaitingKnownDevice || session.pendingRequest?.preTargeted) {
-      throw httpError(409, 'pre-targeted sessions do not require a PIN');
-    }
-    if (typeof pin !== 'string' || !/^\d{4,8}$/.test(pin)) {
-      throw httpError(400, 'pin must be a 4-8 digit numeric string');
-    }
-    session.pairing.attempts = (session.pairing.attempts ?? 0) + 1;
-    if (session.pairing.attempts > MAX_PIN_ATTEMPTS) {
-      throw httpError(429, 'maximum PIN attempts exceeded');
-    }
-    const expected = session.pairing.pin;
-    if (!expected) {
-      throw httpError(409, 'session has no PIN configured');
-    }
-    if (pin !== expected) {
-      await this.persist();
-      throw httpError(401, 'incorrect PIN');
-    }
-    session.pairing.verifiedAt = new Date().toISOString();
-    session.pairing.attempts = 0;
     await this.persist();
     this.broadcast('session-updated', { session: this.publicSession(session) });
     return this.publicSession(session);

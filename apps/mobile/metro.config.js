@@ -6,6 +6,11 @@ const monorepoRoot = path.resolve(projectRoot, '..', '..');
 
 const config = getDefaultConfig(projectRoot);
 
+// Enable package.json "exports" field so subpath imports like
+// `@dropbeam/crypto-core/rn` resolve to ./src/rn.ts.
+config.resolver.unstable_enablePackageExports = true;
+config.resolver.unstable_conditionNames = ['react-native', 'require', 'import', 'default'];
+
 config.watchFolders = [monorepoRoot];
 config.resolver.nodeModulesPaths = [
   path.resolve(projectRoot, 'node_modules'),

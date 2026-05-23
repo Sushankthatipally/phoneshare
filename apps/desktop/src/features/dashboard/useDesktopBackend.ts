@@ -19,7 +19,9 @@ import {
   type UpdateSettingsRequest,
 } from '@dropbeam/protocol';
 
-const client = new DropbeamBackendClient(resolveBackendOrigin(import.meta.env.VITE_DROPBEAM_API));
+const BACKEND_ORIGIN = resolveBackendOrigin(import.meta.env.VITE_DROPBEAM_API);
+console.info('[dropbeam] backend origin =', BACKEND_ORIGIN);
+const client = new DropbeamBackendClient(BACKEND_ORIGIN);
 
 function resolvePhoneOrigin(hostnameOverride?: string | null) {
   if (typeof window === 'undefined') return 'http://localhost:5174';
@@ -43,13 +45,15 @@ export function useDesktopBackend() {
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
+    console.info('[dropbeam] refresh() start');
     const [nextHealth, nextDashboard, nextHistory, nextSessions, nextDevices] = await Promise.all([
-      client.health(),
-      client.dashboard(),
-      client.history(),
-      client.sessions(),
-      client.discovery(),
+      client.health().catch((e) => { console.error('[dropbeam] health() failed', e); throw e; }),
+      client.dashboard().catch((e) => { console.error('[dropbeam] dashboard() failed', e); throw e; }),
+      client.history().catch((e) => { console.error('[dropbeam] history() failed', e); throw e; }),
+      client.sessions().catch((e) => { console.error('[dropbeam] sessions() failed', e); throw e; }),
+      client.discovery().catch((e) => { console.error('[dropbeam] discovery() failed', e); throw e; }),
     ]);
+    console.info('[dropbeam] refresh() ok — sessions:', nextSessions.length, 'active:', nextSessions.filter(s => !['closed','completed','failed'].includes(s.state)).length);
     setHealth(nextHealth);
     setDashboard(nextDashboard);
     setHistory(nextHistory);
@@ -135,6 +139,7 @@ export function useDesktopBackend() {
       setError(null);
       try {
         const lanHost = devices.find((d) => d.local)?.host ?? null;
+        console.info('[dropbeam] createSession() input=', input, 'lanHost=', lanHost);
         const session = await client.createSession({
           mode: input.mode ?? settings?.preferredMode,
           deviceName: settings?.deviceName,
@@ -144,10 +149,12 @@ export function useDesktopBackend() {
           origin: resolvePhoneOrigin(lanHost),
           backendOrigin: replaceOriginHostname(resolveBackendOrigin(import.meta.env.VITE_DROPBEAM_API), lanHost),
         });
+        console.info('[dropbeam] createSession() ok — id=', session.id);
         setSelectedSessionId(session.id);
         await refresh();
         return session;
       } catch (e) {
+        console.error('[dropbeam] createSession() failed', e);
         setError(e instanceof Error ? e.message : 'Failed to create session');
         return null;
       } finally {
@@ -203,12 +210,18 @@ export function useDesktopBackend() {
   );
 
   const closeSession = useCallback(async () => {
-    if (!activeSession) return;
+    console.info('[dropbeam] closeSession() clicked. activeSession =', activeSession?.id ?? null);
+    if (!activeSession) {
+      console.warn('[dropbeam] closeSession() — no active session in frontend state');
+      return;
+    }
     setBusy('close-session');
     try {
       await client.closeSession(activeSession.id, 'Closed from desktop UI');
+      console.info('[dropbeam] closeSession() ok');
       await refresh();
     } catch (e) {
+      console.error('[dropbeam] closeSession() failed', e);
       setError(e instanceof Error ? e.message : 'Failed to close');
     } finally {
       setBusy(null);
@@ -322,6 +335,8 @@ export function useDesktopBackend() {
     updateSettings,
     uploadFile: client.uploadFile.bind(client),
     peerStorage: client.peerStorage.bind(client),
+    subscribeEvent: (handler: (event: { type: string; [key: string]: unknown }) => void) =>
+      client.subscribe((envelope) => handler(envelope as unknown as { type: string; [key: string]: unknown })),
   };
 }
 

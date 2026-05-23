@@ -458,24 +458,37 @@ export function ConnectionProvider({ children }: PropsWithChildren) {
       payload: DirectPairingPayload | HotspotPairingPayload,
       label: string,
     ) => {
+      console.info('[dropbeam] handshake start', { kind, sessionId: payload.sessionId, host: payload.host, port: payload.port });
       setState('connecting');
       setErrorMessage(null);
       setPin(null);
 
       const expiresMs = Date.parse(payload.expiresAt);
       if (Number.isFinite(expiresMs) && expiresMs < Date.now()) {
+        console.warn('[dropbeam] handshake — QR expired', payload.expiresAt);
         setState('expired');
         setErrorMessage('This QR code has expired. Ask the sender to generate a new one.');
         return;
       }
 
       const origin = inferOrigin(payload.host, payload.port);
-      const keyAgreement = await generateKeyAgreement();
-      const sessionKey = await deriveSessionKey({
-        keyAgreement,
-        remotePublicKey: payload.publicKey,
-        sessionId: payload.sessionId,
-      });
+      console.info('[dropbeam] handshake — origin =', origin);
+      let keyAgreement;
+      let sessionKey;
+      try {
+        keyAgreement = await generateKeyAgreement();
+        sessionKey = await deriveSessionKey({
+          keyAgreement,
+          remotePublicKey: payload.publicKey,
+          sessionId: payload.sessionId,
+        });
+        console.info('[dropbeam] handshake — keys derived');
+      } catch (err) {
+        console.error('[dropbeam] handshake — key derivation FAILED', err);
+        setState('error');
+        setErrorMessage(err instanceof Error ? `key derivation: ${err.message}` : 'key derivation failed');
+        return;
+      }
 
       sessionMaterialRef.current = {
         keyAgreement,
@@ -484,7 +497,16 @@ export function ConnectionProvider({ children }: PropsWithChildren) {
         origin,
       };
 
-      const localPin = await derivePinCode(sessionKey.rawKey, payload.sessionId);
+      let localPin: string;
+      try {
+        localPin = await derivePinCode(sessionKey.rawKey, payload.sessionId);
+        console.info('[dropbeam] handshake — local PIN derived');
+      } catch (err) {
+        console.error('[dropbeam] handshake — derivePinCode FAILED', err);
+        setState('error');
+        setErrorMessage(err instanceof Error ? `PIN derivation: ${err.message}` : 'PIN derivation failed');
+        return;
+      }
       setPin(localPin);
 
       const body: ConnectSessionRequest = {
@@ -495,14 +517,18 @@ export function ConnectionProvider({ children }: PropsWithChildren) {
         platform: Device.osName === 'iOS' ? 'ios' : 'android',
       };
 
+      const connectUrl = `${origin}/api/sessions/${encodeURIComponent(payload.sessionId)}/connect`;
+      console.info('[dropbeam] handshake — POST', connectUrl);
       let connectResponse: ConnectSessionResponse;
       try {
-        const res = await fetch(`${origin}/api/sessions/${encodeURIComponent(payload.sessionId)}/connect`, {
+        const res = await fetch(connectUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
         });
+        console.info('[dropbeam] handshake — connect status', res.status);
         const json = (await res.json().catch(() => ({}))) as Partial<ConnectSessionResponse>;
+        console.info('[dropbeam] handshake — connect body', json);
         if (!res.ok || typeof json !== 'object' || json === null) {
           throw new Error(`HTTP ${res.status}`);
         }
@@ -514,10 +540,12 @@ export function ConnectionProvider({ children }: PropsWithChildren) {
           expiresAt: json.expiresAt ?? null,
         };
       } catch (err) {
+        console.error('[dropbeam] handshake — connect FAILED', err);
         setState('error');
         setErrorMessage(err instanceof Error ? err.message : 'connect failed');
         return;
       }
+      console.info('[dropbeam] handshake — state after connect:', connectResponse.state);
 
       const session: SecureSession = {
         kind,
@@ -547,19 +575,19 @@ export function ConnectionProvider({ children }: PropsWithChildren) {
         return;
       }
 
-      // pin-required: show PIN screen.
+      // awaiting-accept / pin-required (legacy): wait for the desktop user to
+      // tap Accept. PIN screen is no longer shown — Accept on the desktop is
+      // the only trust gate. Listen on SSE for `session-paired`.
       setConnectionRaw(session);
-      setState('pin-required');
+      setState('connecting');
       setAttemptsRemaining(3);
       subscribeSse(origin, payload.sessionId, (type) => {
         if (type === 'session-paired') {
-          // Backend confirms PIN passed — handled by verifyPin too, but SSE wins if PIN
-          // was entered on the desktop side as a fallback verification.
           const paired: SecureSession = { ...session, pairedAt: new Date().toISOString() };
           void setSecureConnection(paired, 'paired');
         } else if (type === 'session-locked') {
           setState('locked');
-          setErrorMessage('Too many wrong attempts. Generate a new QR to try again.');
+          setErrorMessage('Desktop declined the connection.');
         } else if (type === 'session-expired') {
           setState('expired');
           setErrorMessage('Session expired before pairing finished.');

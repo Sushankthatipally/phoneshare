@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppState, type AppStateStatus } from 'react-native';
+import * as FileSystem from 'expo-file-system';
 
 import { ScreenCard } from '../components/ScreenCard.js';
 import {
@@ -26,10 +27,18 @@ interface ActiveBatch {
 interface ActiveTransfer {
   batchId: string;
   acceptedFileIds: Set<string>;
+  acceptedNames: Set<string>;
   totalBytes: number;
   bytesTransferred: number;
   completedFileIds: Set<string>;
   activityId: string | null;
+}
+
+interface SavedFile {
+  name: string;
+  uri: string;
+  size: number;
+  savedAt: string;
 }
 
 export function IncomingScreen() {
@@ -40,6 +49,7 @@ export function IncomingScreen() {
   const [active, setActive] = useState<ActiveBatch | null>(null);
   const [busy, setBusy] = useState<'accept' | 'decline' | null>(null);
   const [statusLine, setStatusLine] = useState<string | null>(null);
+  const [savedFiles, setSavedFiles] = useState<SavedFile[]>([]);
   const transferRef = useRef<ActiveTransfer | null>(null);
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
 
@@ -98,16 +108,44 @@ export function IncomingScreen() {
         return;
       }
       if (event.type === 'file-uploaded') {
-        const fileId = (event as { file?: { id?: string } }).file?.id;
+        const file = (event as { file?: { id?: string; name?: string; size?: number } }).file;
         const transfer = transferRef.current;
-        if (!transfer || !fileId) return;
-        if (!transfer.acceptedFileIds.has(fileId)) return;
-        transfer.completedFileIds.add(fileId);
-        if (transfer.completedFileIds.size >= transfer.acceptedFileIds.size) {
+        if (!transfer || !file?.id || !file?.name) return;
+        if (!transfer.acceptedNames.has(file.name)) return;
+        if (transfer.completedFileIds.has(file.id)) return;
+        transfer.completedFileIds.add(file.id);
+
+        // Download bytes and save to phone storage.
+        void (async () => {
+          if (!connection) return;
+          const downloadUrl = `${connection.origin}/api/files/${encodeURIComponent(file.id!)}/download`;
+          const safeName = file.name!.replace(/[^a-zA-Z0-9._-]/g, '_');
+          const target = `${FileSystem.documentDirectory ?? ''}dropbeam/${Date.now()}-${safeName}`;
+          try {
+            await FileSystem.makeDirectoryAsync(`${FileSystem.documentDirectory ?? ''}dropbeam`, { intermediates: true });
+          } catch {
+            // exists
+          }
+          try {
+            const result = await FileSystem.downloadAsync(downloadUrl, target);
+            if (result.status >= 200 && result.status < 300) {
+              setSavedFiles((prev) => [
+                { name: file.name!, uri: result.uri, size: file.size ?? 0, savedAt: new Date().toISOString() },
+                ...prev,
+              ]);
+              setStatusLine(`Saved: ${file.name}`);
+            } else {
+              setStatusLine(`Download failed for ${file.name} (HTTP ${result.status}).`);
+            }
+          } catch (err) {
+            setStatusLine(`Download failed for ${file.name}: ${err instanceof Error ? err.message : 'unknown error'}`);
+          }
+        })();
+
+        if (transfer.completedFileIds.size >= transfer.acceptedNames.size) {
           if (transfer.activityId) void endLiveActivity(transfer.activityId);
           void stopBackgroundReceive();
           transferRef.current = null;
-          setStatusLine(`Received ${transfer.acceptedFileIds.size} file${transfer.acceptedFileIds.size === 1 ? '' : 's'}.`);
         }
       }
     }
@@ -156,6 +194,7 @@ export function IncomingScreen() {
         transferRef.current = {
           batchId: active.batch.id,
           acceptedFileIds: acceptedSet,
+          acceptedNames: new Set(acceptedFiles.map((f) => f.name)),
           totalBytes,
           bytesTransferred: 0,
           completedFileIds: new Set(),
@@ -206,7 +245,7 @@ export function IncomingScreen() {
 
   if (!active) {
     return (
-      <View style={layoutStyles.wrap}>
+      <ScrollView style={layoutStyles.wrap} contentContainerStyle={layoutStyles.scroll}>
         <ScreenCard
           eyebrow="Incoming"
           title="Waiting for a transfer"
@@ -218,7 +257,24 @@ export function IncomingScreen() {
         >
           {statusLine ? <Text style={layoutStyles.status}>{statusLine}</Text> : null}
         </ScreenCard>
-      </View>
+        {savedFiles.length > 0 ? (
+          <ScreenCard eyebrow="Received" title={`${savedFiles.length} file${savedFiles.length === 1 ? '' : 's'} on this phone`}>
+            <View style={layoutStyles.fileList}>
+              {savedFiles.map((file) => (
+                <View key={file.uri} style={fileStyles.row}>
+                  <View style={fileStyles.meta}>
+                    <Text style={fileStyles.name}>{file.name}</Text>
+                    <Text style={fileStyles.detail}>
+                      {formatBytes(file.size)} · saved {new Date(file.savedAt).toLocaleTimeString()}
+                    </Text>
+                    <Text style={fileStyles.detail}>{file.uri}</Text>
+                  </View>
+                </View>
+              ))}
+            </View>
+          </ScreenCard>
+        ) : null}
+      </ScrollView>
     );
   }
 

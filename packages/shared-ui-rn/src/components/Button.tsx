@@ -66,7 +66,13 @@ export function Button({
           {label}
         </Text>
       ) : null}
-      {children}
+      {typeof children === 'string' || typeof children === 'number' ? (
+        <Text style={[styles.label, { color: palette.fg }, labelStyle]} numberOfLines={1}>
+          {children}
+        </Text>
+      ) : (
+        children
+      )}
       {trailing}
     </Pressable>
   );
