@@ -360,18 +360,6 @@ export interface KnownDeviceRecord {
   lastSeenAt: string;
 }
 
-export interface GuestShareSummary {
-  id: string;
-  token: string;
-  createdAt: string;
-  expiresAt: string;
-  maxUses: number;
-  uses: number;
-  files: number;
-  /** Optional human-readable label for the sharing device, shown to guests. */
-  sharerName?: string | null;
-}
-
 export interface PendingTransferBatch {
   id: string;
   direction: LiveTransferDirection;
@@ -454,7 +442,6 @@ export interface DashboardResponse {
   activeSessions: LiveSessionRecord[];
   trustedDevices: TrustedDeviceRecord[];
   knownDevices: KnownDeviceRecord[];
-  guestShares: GuestShareSummary[];
 }
 
 export interface CreateSessionRequest {

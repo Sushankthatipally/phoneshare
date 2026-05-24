@@ -1,6 +1,6 @@
 /*
  * DropBeam local backend.
- * Provides session, file-transfer, trusted-device, guest-share, and benchmark services
+ * Provides session, file-transfer, trusted-device, and benchmark services
  * for the desktop and mobile apps.
  */
 import { createServer } from 'node:http';
@@ -12,7 +12,6 @@ import { resolveBackendConfig } from './config.js';
 import { BackendDiscoveryService } from './discovery.js';
 import { LocalBackendStore } from './store.js';
 import { WatchFolderDriver } from './watch-folders.js';
-import { renderGuestPageHtml, renderGuestExpiredHtml } from './guest-page.js';
 
 const { dataDir, host, port } = resolveBackendConfig();
 
@@ -92,20 +91,6 @@ async function handleRequest(req, res) {
   }
 
   const { pathname, searchParams, origin } = parseRequestUrl(req);
-
-  // ─── Guest mode (browser-facing HTML) ───────────────────
-  if (req.method === 'GET' && pathname.startsWith('/guest/')) {
-    const token = decodeURIComponent(pathname.split('/')[2] ?? '');
-    return renderGuestPage(res, token);
-  }
-  if (req.method === 'GET' && pathname.startsWith('/api/guest/')) {
-    const parts = pathname.split('/');
-    if (parts.length === 6 && parts[4] === 'files' && parts[5] === 'download') {
-      const token = decodeURIComponent(parts[3]);
-      const fileId = searchParams.get('fileId') ?? '';
-      return serveGuestFile(res, token, fileId);
-    }
-  }
 
   // ─── Health / dashboard / history ───────────────────────
   if (req.method === 'GET' && pathname === '/api/health') {
@@ -348,30 +333,6 @@ async function handleRequest(req, res) {
     }
   }
 
-  // ─── Guest shares (host-side admin) ─────────────────────
-  if (req.method === 'POST' && pathname === '/api/guest') {
-    const body = await readJson(req);
-    const share = await store.createGuestShare(body ?? {});
-    // Include lanUrl so the desktop UI / phone can show a URL reachable from the LAN
-    // instead of the loopback-bound 127.0.0.1 the desktop's webview client knows.
-    const lanOrigin = store.lanOrigin();
-    return sendJson(res, 201, {
-      ok: true,
-      share,
-      lanUrl: lanOrigin ? `${lanOrigin}/guest/${encodeURIComponent(share.token)}` : null,
-      lanOrigin,
-    });
-  }
-  if (pathname.startsWith('/api/guest/')) {
-    const parts = pathname.split('/');
-    if (parts.length === 5 && parts[4] === 'files' && req.method === 'PUT') {
-      const token = decodeURIComponent(parts[3]);
-      const fileMeta = JSON.parse(decodeURIComponent(req.headers['x-file-meta'] ?? '{}'));
-      const record = await store.addGuestFile(token, fileMeta, req);
-      return sendJson(res, 201, { ok: true, file: record });
-    }
-  }
-
   // ─── Benchmark ──────────────────────────────────────────
   if (req.method === 'PUT' && pathname === '/api/benchmark/echo') {
     return runBenchmarkEcho(req, res);
@@ -425,37 +386,6 @@ function buildHealth() {
   };
 }
 
-async function renderGuestPage(res, token) {
-  const share = store.getGuestShare(token);
-  if (!share) {
-    res.writeHead(404, {
-      'Content-Type': 'text/html; charset=utf-8',
-      'Cache-Control': 'no-store',
-    });
-    return res.end(renderGuestExpiredHtml());
-  }
-  res.writeHead(200, {
-    'Content-Type': 'text/html; charset=utf-8',
-    'Cache-Control': 'no-store',
-    'X-Content-Type-Options': 'nosniff',
-    'Referrer-Policy': 'no-referrer',
-  });
-  res.end(renderGuestPageHtml({ ...share, token }));
-  // Increment once per token-load (HTML page render), NOT per file download.
-  await store.incrementGuestUse(token);
-}
-
-async function serveGuestFile(res, token, fileId) {
-  const found = store.guestFilePath(token, fileId);
-  if (!found) return sendJson(res, 404, { ok: false, error: 'Share or file not found' });
-  res.writeHead(200, {
-    'Content-Type': found.file.mimeType,
-    'Content-Length': String(found.file.size),
-    'Content-Disposition': `attachment; filename="${escapeHeaderValue(found.file.name)}"`,
-    'Cache-Control': 'no-store',
-  });
-  return pipeline(createReadStream(found.path), res);
-}
 
 async function runBenchmarkEcho(req, res) {
   const startedAt = Date.now();

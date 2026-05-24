@@ -1,21 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { Download, History as HistoryIcon, House, Link2, SendHorizontal, Settings as SettingsIcon, Zap } from 'lucide-react';
+import { Download, SendHorizontal, Settings as SettingsIcon, Zap } from 'lucide-react';
 
-import { Button } from '@dropbeam/shared-ui';
 import { resolveBackendOrigin } from '@dropbeam/protocol';
 
 import { useDesktopBackend } from './features/dashboard/useDesktopBackend.js';
-import { ConnectionPicker, type ConnectionChoice, type ReconnectIntent } from './components/ConnectionPicker.js';
-import { ConnectionScreen } from './components/ConnectionScreen.js';
 import { IncomingBanner } from './components/IncomingBanner.js';
 import { Onboarding } from './components/Onboarding.js';
-import { History } from './screens/History.js';
-import { Home } from './screens/Home.js';
 import { Receive } from './screens/Receive.js';
 import { Send } from './screens/Send.js';
 import { Settings } from './screens/Settings.js';
-import { Guest } from './screens/Guest.js';
 import { listenTauri } from './lib/tauri.js';
 
 interface WatchFolderEvent {
@@ -25,23 +19,17 @@ interface WatchFolderEvent {
   destinationFingerprint?: string;
 }
 
-type Screen = 'home' | 'send' | 'receive' | 'history' | 'guest' | 'settings';
+type Screen = 'receive' | 'send' | 'settings';
 
-const NAV: Array<{ id: Screen; label: string; icon: typeof House }> = [
-  { id: 'home', label: 'Home', icon: House },
-  { id: 'send', label: 'Send', icon: SendHorizontal },
+const NAV: Array<{ id: Screen; label: string; icon: typeof Download }> = [
   { id: 'receive', label: 'Receive', icon: Download },
-  { id: 'history', label: 'History', icon: HistoryIcon },
-  { id: 'guest', label: 'Guest', icon: Link2 },
+  { id: 'send', label: 'Send', icon: SendHorizontal },
   { id: 'settings', label: 'Settings', icon: SettingsIcon },
 ];
 
 const TITLES: Record<Screen, string> = {
-  home: 'Home',
-  send: 'Send',
   receive: 'Receive',
-  history: 'History',
-  guest: 'Guest share',
+  send: 'Send',
   settings: 'Settings',
 };
 
@@ -76,10 +64,7 @@ type TauriBridge = Window & {
 };
 
 export default function App() {
-  const [screen, setScreen] = useState<Screen>('home');
-  const [pickerOpen, setPickerOpen] = useState(false);
-  const [connection, setConnection] = useState<ConnectionChoice | null>(null);
-  const [reconnectIntent, setReconnectIntent] = useState<ReconnectIntent | null>(null);
+  const [screen, setScreen] = useState<Screen>('receive');
   const [pendingSendPaths, setPendingSendPaths] = useState<string[]>([]);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [dragActive, setDragActive] = useState(false);
@@ -196,7 +181,7 @@ export default function App() {
           await backend.updateClipboard(text);
         }
       } catch {
-        // Permission denied or no clipboard available; back off but keep polling.
+        // Permission denied or no clipboard.
       } finally {
         if (!cancelled) {
           timer = window.setTimeout(tick, CLIPBOARD_POLL_MS);
@@ -227,8 +212,6 @@ export default function App() {
     });
   }, [backend.clipboard, pushToast]);
 
-  // Watch-folder events: when the Tauri watcher emits, hand them off to the
-  // backend which holds the canonical watch-folder config and drives uploads.
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     const origin = resolveBackendOrigin(import.meta.env.VITE_DROPBEAM_API);
@@ -257,18 +240,6 @@ export default function App() {
   }, []);
 
   const needsOnboarding = !backend.loading && backend.settings && !backend.settings.onboardingComplete;
-
-  const statusLabel = backend.loading
-    ? 'Booting'
-    : backend.error
-      ? 'Offline'
-      : backend.activeSession?.pairing.verifiedAt
-        ? 'Paired'
-        : backend.activeSession
-          ? backend.activeSession.state === 'awaiting-accept'
-            ? 'Accept?'
-            : 'Waiting'
-          : 'Idle';
 
   const handleDragOver = useCallback((event: React.DragEvent<HTMLDivElement>) => {
     if (event.dataTransfer.types.includes('Files')) {
@@ -330,34 +301,11 @@ export default function App() {
             );
           })}
         </nav>
-
-        <div className="nav__status">
-          <span>Backend</span>
-          <strong>{statusLabel}</strong>
-        </div>
       </aside>
 
       <main className="workspace">
         <div className="topbar">
           <h1>{TITLES[screen]}</h1>
-          <div className="topbar__actions">
-            {backend.activeSession ? (
-              <Button
-                disabled={backend.busy === 'close-session'}
-                onClick={() => void backend.closeSession()}
-                variant="ghost"
-              >
-                Close session
-              </Button>
-            ) : null}
-            <Button
-              disabled={backend.busy === 'create-session'}
-              onClick={() => setPickerOpen(true)}
-              variant="primary"
-            >
-              New session
-            </Button>
-          </div>
         </div>
 
         {backend.error ? (
@@ -365,54 +313,15 @@ export default function App() {
             <p className="card__eyebrow">Backend unreachable</p>
             <h2 className="card__title">Can't reach the local service</h2>
             <p className="card__copy">{backend.error}</p>
-            <p className="card__copy">
-              The bundled backend should auto-start on port 17619. If you see this message:
-              <br />· Make sure no other DropBeam (or dev <code>node</code>) instance is holding the port.
-              <br />· Run <code>scripts\diagnose-windows.ps1</code> from PowerShell for details.
-            </p>
-            <div className="topbar__actions">
-              <Button onClick={() => void backend.refresh()} variant="primary">
-                Retry
-              </Button>
-            </div>
           </section>
         ) : null}
 
         <IncomingBanner backend={backend} />
 
-        {renderScreen(screen, backend, () => setPickerOpen(true), pendingSendPaths, () => setPendingSendPaths([]))}
+        {renderScreen(screen, backend, pendingSendPaths, () => setPendingSendPaths([]))}
       </main>
 
       {needsOnboarding ? <Onboarding backend={backend} /> : null}
-
-      {pickerOpen ? (
-        <ConnectionPicker
-          backend={backend}
-          onClose={() => setPickerOpen(false)}
-          onChoose={(choice) => {
-            setPickerOpen(false);
-            setConnection(choice);
-          }}
-          onReconnect={(intent) => {
-            setPickerOpen(false);
-            setReconnectIntent(intent);
-            setConnection('wifi');
-          }}
-        />
-      ) : null}
-
-      {connection ? (
-        <ConnectionScreen
-          backend={backend}
-          choice={connection}
-          existingSessionId={reconnectIntent?.sessionId ?? null}
-          reconnectLabel={reconnectIntent?.deviceName ?? null}
-          onClose={() => {
-            setConnection(null);
-            setReconnectIntent(null);
-          }}
-        />
-      ) : null}
 
       {dragActive ? (
         <div className="drop-overlay" aria-hidden="true">
@@ -441,21 +350,14 @@ export default function App() {
 function renderScreen(
   screen: Screen,
   backend: ReturnType<typeof useDesktopBackend>,
-  openPicker: () => void,
   pendingSendPaths: string[],
   clearPendingSendPaths: () => void,
 ) {
   switch (screen) {
-    case 'home':
-      return <Home backend={backend} openPicker={openPicker} />;
     case 'send':
       return <Send backend={backend} pendingSendPaths={pendingSendPaths} onClearPending={clearPendingSendPaths} />;
     case 'receive':
       return <Receive backend={backend} />;
-    case 'history':
-      return <History backend={backend} />;
-    case 'guest':
-      return <Guest backend={backend} />;
     case 'settings':
       return <Settings backend={backend} />;
     default:

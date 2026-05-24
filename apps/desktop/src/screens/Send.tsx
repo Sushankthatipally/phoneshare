@@ -144,7 +144,7 @@ export function Send({
           <p className="card__eyebrow">No paired devices</p>
           <h2 className="card__title">Pair a phone first</h2>
           <p className="card__copy">
-            Start a session on Home and tap Accept on your phone. Once paired, this screen lets you queue files, send to multiple targets, and use Guest mode for browser downloads.
+            Open the mobile app on the same network. Once it appears in Nearby devices, tap to send.
           </p>
         </section>
       ) : null}

@@ -26,7 +26,12 @@
       "optional": true
     }
   },
+  "dependencies": {
+    "@noble/curves": "^1.6.0",
+    "@noble/hashes": "^1.5.0"
+  },
   "devDependencies": {
+    "@types/node": "^22.0.0",
     "@vitest/coverage-v8": "^2.0.0",
     "typescript": "latest",
     "vitest": "^2.0.0"

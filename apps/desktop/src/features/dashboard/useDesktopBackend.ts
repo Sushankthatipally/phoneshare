@@ -1,14 +1,12 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   DropbeamBackendClient,
   resolveBackendOrigin,
   type BackendHealth,
-  type BackendSettings,
   type ClipboardState,
   type DashboardResponse,
   type DiscoveryDeviceRecord,
-  type GuestShareSummary,
   type HistoryEntry,
   type KnownDeviceRecord,
   type LiveSessionRecord,
@@ -38,22 +36,20 @@ export function useDesktopBackend() {
   const [devices, setDevices] = useState<DiscoveryDeviceRecord[]>([]);
   const [trustedDevices, setTrustedDevices] = useState<TrustedDeviceRecord[]>([]);
   const [knownDevices, setKnownDevices] = useState<KnownDeviceRecord[]>([]);
-  const [guestShares, setGuestShares] = useState<GuestShareSummary[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const ensureRef = useRef(false);
 
   const refresh = useCallback(async () => {
-    console.info('[dropbeam] refresh() start');
     const [nextHealth, nextDashboard, nextHistory, nextSessions, nextDevices] = await Promise.all([
-      client.health().catch((e) => { console.error('[dropbeam] health() failed', e); throw e; }),
-      client.dashboard().catch((e) => { console.error('[dropbeam] dashboard() failed', e); throw e; }),
-      client.history().catch((e) => { console.error('[dropbeam] history() failed', e); throw e; }),
-      client.sessions().catch((e) => { console.error('[dropbeam] sessions() failed', e); throw e; }),
-      client.discovery().catch((e) => { console.error('[dropbeam] discovery() failed', e); throw e; }),
+      client.health(),
+      client.dashboard(),
+      client.history(),
+      client.sessions(),
+      client.discovery(),
     ]);
-    console.info('[dropbeam] refresh() ok — sessions:', nextSessions.length, 'active:', nextSessions.filter(s => !['closed','completed','failed'].includes(s.state)).length);
     setHealth(nextHealth);
     setDashboard(nextDashboard);
     setHistory(nextHistory);
@@ -61,7 +57,6 @@ export function useDesktopBackend() {
     setDevices(nextDevices);
     setTrustedDevices(nextDashboard.trustedDevices ?? []);
     setKnownDevices(nextDashboard.knownDevices ?? []);
-    setGuestShares(nextDashboard.guestShares ?? []);
     setSelectedSessionId((current) => {
       if (current && nextSessions.some((s) => s.id === current)) return current;
       return (
@@ -108,6 +103,36 @@ export function useDesktopBackend() {
   const clipboard: ClipboardState | null = dashboard?.clipboard ?? null;
   const activeUploads: UploadSessionRecord[] = dashboard?.activeUploads ?? [];
 
+  /**
+   * Internalized session creation — runs once at mount so discovery TXT records
+   * carry a valid session id + public key. The UI never exposes this.
+   */
+  const ensureSession = useCallback(async () => {
+    if (ensureRef.current) return;
+    ensureRef.current = true;
+    try {
+      const existing = await client.sessions();
+      const open = existing.find((s) => !['closed', 'completed', 'failed'].includes(s.state));
+      if (open) return;
+      const lanHost = devices.find((d) => d.local)?.host ?? null;
+      await client.createSession({
+        mode: settings?.preferredMode,
+        deviceName: settings?.deviceName,
+        deviceIcon: settings?.deviceIcon,
+        origin: resolvePhoneOrigin(lanHost),
+        backendOrigin: replaceOriginHostname(resolveBackendOrigin(import.meta.env.VITE_DROPBEAM_API), lanHost),
+      });
+      await refresh();
+    } catch (e) {
+      console.warn('[dropbeam] ensureSession failed', e);
+    }
+  }, [devices, refresh, settings?.deviceIcon, settings?.deviceName, settings?.preferredMode]);
+
+  useEffect(() => {
+    if (loading) return;
+    void ensureSession();
+  }, [ensureSession, loading]);
+
   const reconnectKnownDevice = useCallback(
     async (fingerprint: string, input: { preferTransport?: TransferMode } = {}) => {
       setBusy('reconnect-known-device');
@@ -131,37 +156,6 @@ export function useDesktopBackend() {
       }
     },
     [devices, refresh, settings?.deviceName],
-  );
-
-  const createSession = useCallback(
-    async (input: { mode?: 'wifi' | 'usb' | 'hotspot'; multiDevice?: boolean; maxDevices?: number } = {}) => {
-      setBusy('create-session');
-      setError(null);
-      try {
-        const lanHost = devices.find((d) => d.local)?.host ?? null;
-        console.info('[dropbeam] createSession() input=', input, 'lanHost=', lanHost);
-        const session = await client.createSession({
-          mode: input.mode ?? settings?.preferredMode,
-          deviceName: settings?.deviceName,
-          deviceIcon: settings?.deviceIcon,
-          multiDevice: input.multiDevice,
-          maxDevices: input.maxDevices,
-          origin: resolvePhoneOrigin(lanHost),
-          backendOrigin: replaceOriginHostname(resolveBackendOrigin(import.meta.env.VITE_DROPBEAM_API), lanHost),
-        });
-        console.info('[dropbeam] createSession() ok — id=', session.id);
-        setSelectedSessionId(session.id);
-        await refresh();
-        return session;
-      } catch (e) {
-        console.error('[dropbeam] createSession() failed', e);
-        setError(e instanceof Error ? e.message : 'Failed to create session');
-        return null;
-      } finally {
-        setBusy(null);
-      }
-    },
-    [devices, refresh, settings?.deviceIcon, settings?.deviceName, settings?.preferredMode],
   );
 
   const acceptIncoming = useCallback(
@@ -194,34 +188,13 @@ export function useDesktopBackend() {
     [refresh],
   );
 
-  const regenerateSession = useCallback(
-    async (sessionId: string) => {
-      setBusy('regenerate-session');
-      try {
-        await client.regenerateSession(sessionId);
-        await refresh();
-      } catch (e) {
-        setError(e instanceof Error ? e.message : 'Failed to regenerate');
-      } finally {
-        setBusy(null);
-      }
-    },
-    [refresh],
-  );
-
   const closeSession = useCallback(async () => {
-    console.info('[dropbeam] closeSession() clicked. activeSession =', activeSession?.id ?? null);
-    if (!activeSession) {
-      console.warn('[dropbeam] closeSession() — no active session in frontend state');
-      return;
-    }
+    if (!activeSession) return;
     setBusy('close-session');
     try {
       await client.closeSession(activeSession.id, 'Closed from desktop UI');
-      console.info('[dropbeam] closeSession() ok');
       await refresh();
     } catch (e) {
-      console.error('[dropbeam] closeSession() failed', e);
       setError(e instanceof Error ? e.message : 'Failed to close');
     } finally {
       setBusy(null);
@@ -278,26 +251,6 @@ export function useDesktopBackend() {
     [refresh],
   );
 
-  const createGuestShare = useCallback(
-    async (input: { ttlMs?: number; maxUses?: number }, files: File[]) => {
-      setBusy('create-guest');
-      try {
-        const share = await client.createGuestShare(input);
-        for (const file of files) {
-          await client.addGuestFile(share.token, file);
-        }
-        await refresh();
-        return share;
-      } catch (e) {
-        setError(e instanceof Error ? e.message : 'Failed to create guest share');
-        return null;
-      } finally {
-        setBusy(null);
-      }
-    },
-    [refresh],
-  );
-
   return {
     activeSession,
     activeUploads,
@@ -306,7 +259,6 @@ export function useDesktopBackend() {
     dashboard,
     devices,
     error,
-    guestShares,
     health,
     history,
     knownDevices,
@@ -317,17 +269,13 @@ export function useDesktopBackend() {
     trustedDevices,
     acceptIncoming,
     closeSession,
-    createGuestShare,
-    createSession,
     declineIncoming,
     downloadFile: client.downloadFile.bind(client),
     downloadUrl: client.downloadUrl.bind(client),
-    guestUrl: client.guestUrl.bind(client),
     benchmarkSend: client.benchmarkSend.bind(client),
     benchmarkReceive: client.benchmarkReceive.bind(client),
     reconnectKnownDevice,
     refresh,
-    regenerateSession,
     removeTrusted,
     setSelectedSessionId,
     setTrusted,

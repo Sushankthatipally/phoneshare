@@ -1,6 +1,6 @@
 {
   "name": "dropbeam",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "private": true,
   "packageManager": "pnpm@10.27.0",
   "scripts": {
@@ -8,6 +8,7 @@
     "dev": "turbo run dev --filter=@dropbeam/local-backend --filter=@dropbeam/desktop --filter=@dropbeam/mobile",
     "dev:desktop": "pnpm --filter @dropbeam/desktop dev",
     "dev:mobile": "pnpm --filter @dropbeam/mobile dev",
+    "dev:web": "pnpm --filter @dropbeam/mobile exec expo start --web --port 8082",
     "typecheck": "turbo run typecheck"
   },
   "pnpm": {

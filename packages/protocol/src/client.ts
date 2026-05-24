@@ -6,7 +6,6 @@ import type {
   CreateSessionRequest,
   DiscoveryDeviceRecord,
   DashboardResponse,
-  GuestShareSummary,
   HistoryEntry,
   KnownDeviceRecord,
   LanIpsResponse,
@@ -253,35 +252,6 @@ export class DropbeamBackendClient {
     return this.request<{ ok: boolean }>(`/api/trusted-devices/${encodeURIComponent(fingerprint)}`, {
       method: 'DELETE',
     });
-  }
-
-  createGuestShare(input: { ttlMs?: number; maxUses?: number; sharerName?: string | null }) {
-    return this.request<{
-      share: GuestShareSummary & { token: string };
-      lanUrl?: string | null;
-      lanOrigin?: string | null;
-    }>('/api/guest', {
-      method: 'POST',
-      body: JSON.stringify(input),
-      headers: { 'Content-Type': 'application/json' },
-    }).then((r) => ({ ...r.share, lanUrl: r.lanUrl ?? null, lanOrigin: r.lanOrigin ?? null }));
-  }
-
-  async addGuestFile(token: string, file: File) {
-    const meta = JSON.stringify({ name: file.name, mimeType: file.type || 'application/octet-stream' });
-    const response = await fetch(`${this.origin}/api/guest/${encodeURIComponent(token)}/files`, {
-      method: 'PUT',
-      headers: {
-        'Content-Type': file.type || 'application/octet-stream',
-        'X-File-Meta': encodeURIComponent(meta),
-      },
-      body: file,
-    });
-    return this.readJson<{ file: { id: string; name: string; size: number } }>(response).then((r) => r.file);
-  }
-
-  guestUrl(token: string) {
-    return `${this.origin}/guest/${encodeURIComponent(token)}`;
   }
 
   async benchmarkSend(bytes = 4 * 1024 * 1024) {

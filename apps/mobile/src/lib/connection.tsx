@@ -13,7 +13,6 @@ import {
 
 import {
   deriveSessionKey,
-  derivePinCode,
   generateKeyAgreement,
   type KeyAgreementMaterial,
   type SessionKeyMaterial,
@@ -24,47 +23,22 @@ import type {
   DeviceIcon,
   DirectPairingPayload,
   HotspotPairingPayload,
-  PinVerificationRequest,
-  PinVerificationResponse,
 } from '@dropbeam/protocol';
 
-import type { DirectSessionPayload, GuestSessionPayload, HotspotSessionPayload } from './parseSessionPayload.js';
+import type { DirectSessionPayload, HotspotSessionPayload } from './parseSessionPayload.js';
 
 /**
- * Connection / session state machine for the mobile app.
- *
- * Three pairing flavours live in the same context:
- *   - guest      : legacy /guest/<token> HTTP share, no PIN, no ECDH.
- *   - direct     : Flow 2.1 — phone scans Wi-Fi/USB QR, runs ECDH + PIN.
- *   - hotspot    : Flow 2.4 — phone joins SSID, then runs the same handshake.
- *
- * The session is persisted to AsyncStorage so app restart resumes silently
- * (Flow 2.6). Only the resume token + sharedSecret + peer identity persist —
- * the X25519 private key is discarded after key derivation, per spec.
+ * Connection state for the mobile app — encrypted session only. Guest URL
+ * pairing and SAS PIN entry were removed; tap-to-send via discovery TXT
+ * records is the primary path, with manual IP / USB fallback.
  */
 
-export type SessionKind = 'guest' | 'direct' | 'hotspot';
+export type SessionKind = 'direct' | 'hotspot';
 
-export type ConnectionState =
-  | 'idle'
-  | 'connecting'
-  | 'pin-required'
-  | 'paired'
-  | 'locked'
-  | 'expired'
-  | 'error';
-
-export interface GuestConnection {
-  kind: 'guest';
-  origin: string;
-  token: string;
-  label: string;
-  sessionId?: undefined;
-  peerName?: undefined;
-}
+export type ConnectionState = 'idle' | 'connecting' | 'paired' | 'error';
 
 export interface SecureSession {
-  kind: 'direct' | 'hotspot';
+  kind: SessionKind;
   sessionId: string;
   origin: string;
   label: string;
@@ -77,9 +51,8 @@ export interface SecureSession {
   pairedAt?: string;
 }
 
-export type ActiveConnection = GuestConnection | SecureSession;
-
-export type ConnectionInfo = GuestConnection | SecureSession;
+export type ActiveConnection = SecureSession;
+export type ConnectionInfo = SecureSession;
 
 export type BackendEvent =
   | { type: 'transfer-requested'; sessionId: string; batch: TransferBatch }
@@ -136,67 +109,40 @@ const STORAGE_KEY_ONBOARDED = '@dropbeam/onboarded';
 const STORAGE_KEY_DEVICE_FINGERPRINT = '@dropbeam/device-fingerprint';
 
 interface ConnectionContextValue {
-  /** Currently active session — guest or secure — or null when idle. */
   connection: ActiveConnection | null;
-  /** Detailed state machine for secure sessions. */
   state: ConnectionState;
-  /** Local device's stable, persisted fingerprint (random UUID). */
   deviceFingerprint: string;
-  /** Device name shown to peers; persisted to AsyncStorage. */
   deviceName: string;
-  /** Onboarding flag, persisted. */
   onboarded: boolean;
-  /** PIN-attempts remaining when state === 'pin-required'. */
-  attemptsRemaining: number;
-  /** PIN computed locally from the shared secret; set after ECDH. */
-  pin: string | null;
-  /** Files queued/uploaded since session start. */
   history: HistoryEntry[];
-  /** Most recent error (auth fail, expired QR, network, etc.). */
   errorMessage: string | null;
 
   setDeviceName: (name: string) => void;
   markOnboarded: () => void;
 
-  /** Establish a plain guest session from a parsed /guest/<token> URL. */
-  attachGuestSession: (payload: GuestSessionPayload) => Promise<void>;
-  /** Run the ECDH handshake against a direct pairing payload (Flow 2.1). */
   startDirectHandshake: (payload: DirectSessionPayload) => Promise<void>;
-  /** Run the ECDH handshake against a hotspot pairing payload (Flow 2.4). */
   startHotspotHandshake: (payload: HotspotSessionPayload) => Promise<void>;
-  /** Submit the 6-digit SAS PIN to the backend (Flow 4.1). */
-  verifyPin: (pin: string) => Promise<PinVerificationResponse>;
-  /** Drop the current session and clear persistence. */
   disconnect: () => Promise<void>;
-  /** Clear non-fatal error state without dropping the session. */
   clearError: () => void;
 
-  // Transfer history helpers (consumed by SendScreen)
   addHistory: (entry: HistoryEntry) => void;
   updateHistory: (id: string, patch: Partial<HistoryEntry>) => void;
   clearHistory: () => void;
 
-  /** Subscribe to backend SSE events for the active session. */
   subscribe: (listener: (event: BackendEvent) => void) => () => void;
 
-  /** Known devices for reconnect (stub — populated when W16 known-devices store lands). */
   knownDevices: Array<{ fingerprint: string; name: string; origin: string }>;
-  /** Client-side settings (clipboardSync, backgroundReceive, autoAccept). */
   settings: { clipboardSyncEnabled: boolean; backgroundReceiveEnabled: boolean };
-  /** Replace the active connection (used by share-receive / history-retry). */
   setConnection: (connection: ActiveConnection | null) => void;
-  /** True once the persisted state has been loaded from AsyncStorage. */
   hydrated: boolean;
 }
 
 const ConnectionContext = createContext<ConnectionContextValue | null>(null);
 
 function randomFingerprint(): string {
-  // Avoids importing node:crypto; uses Web Crypto polyfilled by quick-crypto.
   if (typeof globalThis.crypto?.randomUUID === 'function') {
     return globalThis.crypto.randomUUID();
   }
-  // Fallback — Math.random based, only used when crypto isn't installed yet.
   const seg = () =>
     Math.floor(Math.random() * 0x10000)
       .toString(16)
@@ -205,7 +151,7 @@ function randomFingerprint(): string {
 }
 
 interface PersistedSession {
-  kind: 'direct' | 'hotspot';
+  kind: SessionKind;
   sessionId: string;
   origin: string;
   label: string;
@@ -221,14 +167,12 @@ export function ConnectionProvider({ children }: PropsWithChildren) {
   const [connection, setConnectionRaw] = useState<ActiveConnection | null>(null);
   const [state, setState] = useState<ConnectionState>('idle');
   const [history, setHistory] = useState<HistoryEntry[]>([]);
+  const [hydrated, setHydrated] = useState(false);
   const [onboarded, setOnboarded] = useState(false);
   const [deviceName, setDeviceNameState] = useState(() => Device.deviceName ?? 'My phone');
   const [deviceFingerprint, setDeviceFingerprint] = useState<string>(() => randomFingerprint());
-  const [attemptsRemaining, setAttemptsRemaining] = useState(3);
-  const [pin, setPin] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // Per-session crypto material kept in a ref — never touched by React renders.
   const sessionMaterialRef = useRef<{
     keyAgreement: KeyAgreementMaterial | null;
     sessionKey: SessionKeyMaterial | null;
@@ -236,7 +180,6 @@ export function ConnectionProvider({ children }: PropsWithChildren) {
     origin: string | null;
   }>({ keyAgreement: null, sessionKey: null, sessionId: null, origin: null });
 
-  // SSE subscription kept in a ref so unmount can close it.
   const sseRef = useRef<{ close: () => void } | null>(null);
   const listenersRef = useRef<Set<(event: BackendEvent) => void>>(new Set());
 
@@ -286,7 +229,6 @@ export function ConnectionProvider({ children }: PropsWithChildren) {
     [persistSession],
   );
 
-  // Hydrate from AsyncStorage on mount.
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -312,7 +254,7 @@ export function ConnectionProvider({ children }: PropsWithChildren) {
 
         if (storedSession) {
           const parsed = JSON.parse(storedSession) as PersistedSession;
-          const resumed: SecureSession = {
+          setConnectionRaw({
             kind: parsed.kind,
             sessionId: parsed.sessionId,
             origin: parsed.origin,
@@ -323,14 +265,15 @@ export function ConnectionProvider({ children }: PropsWithChildren) {
             peerFingerprint: parsed.peerFingerprint,
             peerIcon: parsed.peerIcon,
             pairedAt: parsed.pairedAt,
-          };
-          setConnectionRaw(resumed);
+          });
           setState('paired');
         }
       } catch (err) {
         if (!cancelled) {
           setErrorMessage(err instanceof Error ? err.message : 'failed to load persisted state');
         }
+      } finally {
+        if (!cancelled) setHydrated(true);
       }
     })();
     return () => {
@@ -360,28 +303,6 @@ export function ConnectionProvider({ children }: PropsWithChildren) {
 
   const clearError = useCallback(() => setErrorMessage(null), []);
 
-  // ---- Plain guest session ---------------------------------------------------
-
-  const attachGuestSession = useCallback(
-    async (payload: GuestSessionPayload) => {
-      const guest: GuestConnection = {
-        kind: 'guest',
-        origin: payload.origin,
-        token: payload.token,
-        label: payload.label,
-      };
-      setConnectionRaw(guest);
-      setState('paired');
-      setErrorMessage(null);
-      sessionMaterialRef.current = { keyAgreement: null, sessionKey: null, sessionId: null, origin: payload.origin };
-      // Guest sessions don't persist — they're token-scoped.
-      await AsyncStorage.removeItem(STORAGE_KEY_SESSION);
-    },
-    [],
-  );
-
-  // ---- Secure ECDH handshake -------------------------------------------------
-
   const inferOrigin = useCallback((host: string, port: number) => `http://${host}:${port}`, []);
   const inferIcon = useCallback((): DeviceIcon => {
     if (Device.deviceType === Device.DeviceType.TABLET) return 'tablet';
@@ -390,10 +311,8 @@ export function ConnectionProvider({ children }: PropsWithChildren) {
 
   const subscribeSse = useCallback(
     (origin: string, sessionId: string, onEvent: (type: string, payload: unknown) => void) => {
-      // Close any prior subscription.
       sseRef.current?.close();
 
-      // EventSource is not built into React Native; we use fetch streaming.
       const controller = new AbortController();
       let closed = false;
 
@@ -438,7 +357,7 @@ export function ConnectionProvider({ children }: PropsWithChildren) {
             }
           }
         } catch {
-          // Network errors are surfaced via state machine, not thrown here.
+          // Network errors surface via state.
         }
       })();
 
@@ -449,30 +368,27 @@ export function ConnectionProvider({ children }: PropsWithChildren) {
         },
       };
     },
-    [],
+    [broadcastToListeners],
   );
 
   const runHandshake = useCallback(
     async (
-      kind: 'direct' | 'hotspot',
+      kind: SessionKind,
       payload: DirectPairingPayload | HotspotPairingPayload,
       label: string,
     ) => {
       console.info('[dropbeam] handshake start', { kind, sessionId: payload.sessionId, host: payload.host, port: payload.port });
       setState('connecting');
       setErrorMessage(null);
-      setPin(null);
 
       const expiresMs = Date.parse(payload.expiresAt);
       if (Number.isFinite(expiresMs) && expiresMs < Date.now()) {
-        console.warn('[dropbeam] handshake — QR expired', payload.expiresAt);
-        setState('expired');
-        setErrorMessage('This QR code has expired. Ask the sender to generate a new one.');
+        setState('error');
+        setErrorMessage('Pairing payload expired. Refresh discovery and try again.');
         return;
       }
 
       const origin = inferOrigin(payload.host, payload.port);
-      console.info('[dropbeam] handshake — origin =', origin);
       let keyAgreement;
       let sessionKey;
       try {
@@ -482,9 +398,7 @@ export function ConnectionProvider({ children }: PropsWithChildren) {
           remotePublicKey: payload.publicKey,
           sessionId: payload.sessionId,
         });
-        console.info('[dropbeam] handshake — keys derived');
       } catch (err) {
-        console.error('[dropbeam] handshake — key derivation FAILED', err);
         setState('error');
         setErrorMessage(err instanceof Error ? `key derivation: ${err.message}` : 'key derivation failed');
         return;
@@ -497,18 +411,6 @@ export function ConnectionProvider({ children }: PropsWithChildren) {
         origin,
       };
 
-      let localPin: string;
-      try {
-        localPin = await derivePinCode(sessionKey.rawKey, payload.sessionId);
-        console.info('[dropbeam] handshake — local PIN derived');
-      } catch (err) {
-        console.error('[dropbeam] handshake — derivePinCode FAILED', err);
-        setState('error');
-        setErrorMessage(err instanceof Error ? `PIN derivation: ${err.message}` : 'PIN derivation failed');
-        return;
-      }
-      setPin(localPin);
-
       const body: ConnectSessionRequest = {
         publicKey: keyAgreement.publicKey,
         deviceName,
@@ -518,7 +420,6 @@ export function ConnectionProvider({ children }: PropsWithChildren) {
       };
 
       const connectUrl = `${origin}/api/sessions/${encodeURIComponent(payload.sessionId)}/connect`;
-      console.info('[dropbeam] handshake — POST', connectUrl);
       let connectResponse: ConnectSessionResponse;
       try {
         const res = await fetch(connectUrl, {
@@ -526,26 +427,22 @@ export function ConnectionProvider({ children }: PropsWithChildren) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
         });
-        console.info('[dropbeam] handshake — connect status', res.status);
         const json = (await res.json().catch(() => ({}))) as Partial<ConnectSessionResponse>;
-        console.info('[dropbeam] handshake — connect body', json);
         if (!res.ok || typeof json !== 'object' || json === null) {
           throw new Error(`HTTP ${res.status}`);
         }
         connectResponse = {
           ok: Boolean(json.ok),
           sessionId: json.sessionId ?? payload.sessionId,
-          state: (json.state as ConnectSessionResponse['state']) ?? 'pin-required',
+          state: (json.state as ConnectSessionResponse['state']) ?? 'paired',
           serverPublicKey: typeof json.serverPublicKey === 'string' ? json.serverPublicKey : payload.publicKey,
           expiresAt: json.expiresAt ?? null,
         };
       } catch (err) {
-        console.error('[dropbeam] handshake — connect FAILED', err);
         setState('error');
         setErrorMessage(err instanceof Error ? err.message : 'connect failed');
         return;
       }
-      console.info('[dropbeam] handshake — state after connect:', connectResponse.state);
 
       const session: SecureSession = {
         kind,
@@ -554,45 +451,11 @@ export function ConnectionProvider({ children }: PropsWithChildren) {
         label,
         sharedSecret: encodeBase64Url(sessionKey.rawKey),
         peerPublicKey: connectResponse.serverPublicKey,
-        peerName: undefined,
-        peerFingerprint: undefined,
-        peerIcon: undefined,
-        pairedAt: undefined,
+        pairedAt: new Date().toISOString(),
       };
 
-      if (connectResponse.state === 'locked') {
-        setConnectionRaw(session);
-        setState('locked');
-        setErrorMessage('This session is locked. Generate a new QR to try again.');
-        return;
-      }
-
-      if (connectResponse.state === 'paired') {
-        const paired: SecureSession = { ...session, pairedAt: new Date().toISOString() };
-        await setSecureConnection(paired, 'paired');
-        subscribeSse(origin, payload.sessionId, () => undefined);
-        setAttemptsRemaining(3);
-        return;
-      }
-
-      // awaiting-accept / pin-required (legacy): wait for the desktop user to
-      // tap Accept. PIN screen is no longer shown — Accept on the desktop is
-      // the only trust gate. Listen on SSE for `session-paired`.
-      setConnectionRaw(session);
-      setState('connecting');
-      setAttemptsRemaining(3);
-      subscribeSse(origin, payload.sessionId, (type) => {
-        if (type === 'session-paired') {
-          const paired: SecureSession = { ...session, pairedAt: new Date().toISOString() };
-          void setSecureConnection(paired, 'paired');
-        } else if (type === 'session-locked') {
-          setState('locked');
-          setErrorMessage('Desktop declined the connection.');
-        } else if (type === 'session-expired') {
-          setState('expired');
-          setErrorMessage('Session expired before pairing finished.');
-        }
-      });
+      await setSecureConnection(session, 'paired');
+      subscribeSse(origin, payload.sessionId, () => undefined);
     },
     [deviceFingerprint, deviceName, inferIcon, inferOrigin, setSecureConnection, subscribeSse],
   );
@@ -611,80 +474,16 @@ export function ConnectionProvider({ children }: PropsWithChildren) {
     [runHandshake],
   );
 
-  const verifyPin = useCallback(
-    async (submittedPin: string): Promise<PinVerificationResponse> => {
-      const material = sessionMaterialRef.current;
-      if (!material.sessionId || !material.origin || !(connection?.kind === 'direct' || connection?.kind === 'hotspot')) {
-        const noSession: PinVerificationResponse = { ok: false, reason: 'invalid-session', attemptsRemaining: 0 };
-        return noSession;
-      }
-
-      const body: PinVerificationRequest = {
-        pin: submittedPin,
-        deviceFingerprint,
-      };
-
-      let response: PinVerificationResponse;
-      try {
-        const res = await fetch(`${material.origin}/api/sessions/${encodeURIComponent(material.sessionId)}/pin-verify`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
-        const json = (await res.json().catch(() => ({}))) as Partial<PinVerificationResponse>;
-        if (json && typeof json === 'object' && 'ok' in json) {
-          response = json as PinVerificationResponse;
-        } else if (res.status === 423) {
-          response = { ok: false, reason: 'locked', attemptsRemaining: 0 };
-        } else {
-          response = { ok: false, reason: 'mismatch', attemptsRemaining: Math.max(0, attemptsRemaining - 1) };
-        }
-      } catch (err) {
-        setErrorMessage(err instanceof Error ? err.message : 'network error');
-        return { ok: false, reason: 'mismatch', attemptsRemaining };
-      }
-
-      if (response.ok) {
-        const paired: SecureSession = {
-          ...connection,
-          pairedAt: response.session.pairing?.verifiedAt ?? new Date().toISOString(),
-        };
-        await setSecureConnection(paired, 'paired');
-        setAttemptsRemaining(3);
-        return response;
-      }
-
-      if (response.reason === 'locked') {
-        setState('locked');
-        setErrorMessage('Too many wrong attempts. Generate a new QR to try again.');
-      } else if (response.reason === 'expired') {
-        setState('expired');
-        setErrorMessage('Session expired. Generate a new QR.');
-      } else if (response.reason === 'mismatch') {
-        const remaining =
-          typeof response.attemptsRemaining === 'number'
-            ? response.attemptsRemaining
-            : Math.max(0, attemptsRemaining - 1);
-        setAttemptsRemaining(remaining);
-      }
-      return response;
-    },
-    [attemptsRemaining, connection, deviceFingerprint, setSecureConnection],
-  );
-
   const disconnect = useCallback(async () => {
     sseRef.current?.close();
     sseRef.current = null;
     sessionMaterialRef.current = { keyAgreement: null, sessionKey: null, sessionId: null, origin: null };
     setConnectionRaw(null);
     setState('idle');
-    setPin(null);
-    setAttemptsRemaining(3);
     setErrorMessage(null);
     await AsyncStorage.removeItem(STORAGE_KEY_SESSION);
   }, []);
 
-  // Tear down SSE on unmount.
   useEffect(() => {
     return () => {
       sseRef.current?.close();
@@ -699,16 +498,12 @@ export function ConnectionProvider({ children }: PropsWithChildren) {
       deviceFingerprint,
       deviceName,
       onboarded,
-      attemptsRemaining,
-      pin,
       history,
       errorMessage,
       setDeviceName,
       markOnboarded,
-      attachGuestSession,
       startDirectHandshake,
       startHotspotHandshake,
-      verifyPin,
       disconnect,
       clearError,
       addHistory,
@@ -718,12 +513,10 @@ export function ConnectionProvider({ children }: PropsWithChildren) {
       knownDevices: [],
       settings: { clipboardSyncEnabled: false, backgroundReceiveEnabled: false },
       setConnection: (next: ActiveConnection | null) => setConnectionRaw(next),
-      hydrated: true,
+      hydrated,
     }),
     [
       addHistory,
-      attachGuestSession,
-      attemptsRemaining,
       clearError,
       clearHistory,
       connection,
@@ -732,16 +525,15 @@ export function ConnectionProvider({ children }: PropsWithChildren) {
       disconnect,
       errorMessage,
       history,
+      hydrated,
       markOnboarded,
       onboarded,
-      pin,
       setDeviceName,
       startDirectHandshake,
       startHotspotHandshake,
       state,
       subscribe,
       updateHistory,
-      verifyPin,
     ],
   );
 
@@ -754,33 +546,6 @@ export function useConnection(): ConnectionContextValue {
   return ctx;
 }
 
-/**
- * Legacy helper preserved for `apps/mobile/app/index.tsx` style consumers.
- * Use `parseSessionPayload` (which supersedes this) for new code paths.
- */
-export function parseShareUrl(input: string): GuestConnection | null {
-  const raw = input.trim();
-  if (!raw) return null;
-  const withScheme = /^https?:\/\//i.test(raw) ? raw : `http://${raw}`;
-  let url: URL;
-  try {
-    url = new URL(withScheme);
-  } catch {
-    return null;
-  }
-  const match = url.pathname.match(/\/(?:api\/)?guest\/([^/]+)/);
-  if (!match) return null;
-  const token = decodeURIComponent(match[1]);
-  const port = url.port || (url.protocol === 'https:' ? '443' : '80');
-  return {
-    kind: 'guest',
-    origin: `${url.protocol}//${url.host}`,
-    token,
-    label: `${url.hostname}:${port}`,
-  };
-}
-
-// Helper kept private — encoding the rawKey for AsyncStorage persistence.
 function encodeBase64Url(bytes: Uint8Array): string {
   let binary = '';
   for (let i = 0; i < bytes.length; i += 0x8000) {

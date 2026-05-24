@@ -2,19 +2,10 @@ import { useCallback, useMemo } from 'react';
 
 import { useConnection } from '../lib/connection.js';
 import { useDiscovery, type DiscoveredPeer } from '../lib/discovery.js';
-import { DEFAULT_PORT } from '../services/tcp.js';
 import { formatBytes, resolveChunkSize, type TransferDirection } from '../services/transfer.js';
 import type { TransportMode } from '../services/crypto.js';
 
-/**
- * `useMobileBackend` is the glue for legacy dev-harness screens. The mock
- * beacons, mock transfers, and mock history entries that lived here were
- * removed in W14 — every value now comes from the real connection context
- * or the real mDNS discovery hook. UI surfaces that expect a value the
- * backend doesn't yet provide must render an explicit empty state.
- */
-
-export type ConnectionMode = 'qr' | 'lan' | 'hotspot' | 'usb';
+export type ConnectionMode = 'lan' | 'hotspot' | 'usb';
 
 export interface MobileHistoryEntry {
   id: string;
@@ -63,11 +54,8 @@ export function useMobileBackend(): MobileBackendState {
   const { connection, state, history, addHistory } = useConnection();
   const discovery = useDiscovery();
 
-  // Legacy harness exposes a single `connectionMode`; with real state we
-  // simply derive it from the active session and surface it as read-only.
   const connectionMode: ConnectionMode = useMemo(() => {
-    if (!connection) return 'qr';
-    if (connection.kind === 'guest') return 'qr';
+    if (!connection) return 'lan';
     if (connection.kind === 'hotspot') return 'hotspot';
     return 'lan';
   }, [connection]);
@@ -82,15 +70,10 @@ export function useMobileBackend(): MobileBackendState {
 
   const sessionLabel = useMemo(() => {
     if (!connection) return 'No session';
-    if (connection.kind === 'guest') return `Guest · ${connection.token.slice(0, 6)}`;
     return `Session ${connection.sessionId.slice(0, 8)}`;
   }, [connection]);
 
-  const sessionTicket = useMemo(() => {
-    if (!connection || connection.kind === 'guest') return null;
-    // Surface the session id only — the QR's full payload is owned by the desktop side.
-    return connection.sessionId;
-  }, [connection]);
+  const sessionTicket = useMemo(() => connection?.sessionId ?? null, [connection]);
 
   const discoveryLabel = useMemo(() => {
     if (!discovery.available) return 'mDNS unavailable — rebuild the native shell to enable nearby discovery.';
@@ -130,14 +113,11 @@ export function useMobileBackend(): MobileBackendState {
   );
 
   const refresh = useCallback(() => {
-    // Discovery refreshes itself via the mDNS subscription; there is no
-    // imperative "rescan" hook on react-native-zeroconf without restarting
-    // the scan. We accept the legacy noop here rather than fabricate state.
+    // Discovery refreshes via mDNS subscription.
   }, []);
 
   const selectConnectionMode = useCallback(() => {
-    // Connection mode is driven by the actual session; the legacy harness's
-    // setter is intentionally a noop now.
+    // Connection mode is driven by the actual session.
   }, []);
 
   return {

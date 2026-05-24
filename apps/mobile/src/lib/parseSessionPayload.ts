@@ -1,31 +1,12 @@
 /**
- * Parse the QR text the phone receives. Three shapes are supported, in this
- * order of fallback:
+ * Parse a pairing payload. Two shapes:
+ *   1. Direct  — `{ mode: 'wifi'|'usb', sessionId, host, port, publicKey, expiresAt }`
+ *   2. Hotspot — `{ mode: 'hotspot', ssid, password, ... }`
  *
- *   1. Guest HTTP URL — the historical "/guest/<token>" share link. Phone
- *      uploads files via the guest endpoint, no PIN required (browser-style
- *      pairing). Matches the desktop's GuestShareSummary flow.
- *   2. Direct pairing JSON — `{ mode: 'wifi'|'usb', sessionId, transport,
- *      host, port, publicKey, expiresAt }` produced by `createSession()`.
- *      Triggers the full ECDH + PIN handshake (Flow 2.1).
- *   3. Hotspot pairing JSON — `{ mode: 'hotspot', ssid, password, host,
- *      port, publicKey, sessionId, expiresAt }`. Phone joins the SSID first,
- *      then runs the same ECDH/PIN handshake.
- *
- * Returns a discriminated union; the caller branches on `kind`.
+ * Guest-share URLs are no longer supported.
  */
 
-import type {
-  DirectPairingPayload,
-  HotspotPairingPayload,
-} from '@dropbeam/protocol';
-
-export interface GuestSessionPayload {
-  kind: 'guest';
-  origin: string;
-  token: string;
-  label: string;
-}
+import type { DirectPairingPayload, HotspotPairingPayload } from '@dropbeam/protocol';
 
 export interface DirectSessionPayload {
   kind: 'direct';
@@ -39,10 +20,7 @@ export interface HotspotSessionPayload {
   label: string;
 }
 
-export type ParsedSessionPayload =
-  | GuestSessionPayload
-  | DirectSessionPayload
-  | HotspotSessionPayload;
+export type ParsedSessionPayload = DirectSessionPayload | HotspotSessionPayload;
 
 function tryParseJson(raw: string): unknown {
   const trimmed = raw.trim();
@@ -54,25 +32,17 @@ function tryParseJson(raw: string): unknown {
   }
 }
 
-/** Desktop emits `http://host:port/pair/<id>#pair=<URL-encoded JSON>`. Extract the JSON. */
 function tryParsePairUrl(raw: string): unknown {
   const trimmed = raw.trim();
   if (!/^https?:\/\//i.test(trimmed)) return null;
   const hashIdx = trimmed.indexOf('#');
   if (hashIdx < 0) return null;
   const fragment = trimmed.slice(hashIdx + 1);
-  // Fragment is `pair=<encoded>` or `hotspot=<encoded>`; accept either key.
   const eq = fragment.indexOf('=');
   if (eq < 0) return null;
   const encoded = fragment.slice(eq + 1);
-  let decoded: string;
   try {
-    decoded = decodeURIComponent(encoded);
-  } catch {
-    return null;
-  }
-  try {
-    return JSON.parse(decoded);
+    return JSON.parse(decodeURIComponent(encoded));
   } catch {
     return null;
   }
@@ -84,28 +54,6 @@ function isString(value: unknown): value is string {
 
 function isNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
-}
-
-function parseGuestUrl(raw: string): GuestSessionPayload | null {
-  const trimmed = raw.trim();
-  if (!trimmed) return null;
-  const withScheme = /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
-  let url: URL;
-  try {
-    url = new URL(withScheme);
-  } catch {
-    return null;
-  }
-  const match = url.pathname.match(/\/(?:api\/)?guest\/([^/]+)/);
-  if (!match) return null;
-  const token = decodeURIComponent(match[1]);
-  const port = url.port || (url.protocol === 'https:' ? '443' : '80');
-  return {
-    kind: 'guest',
-    origin: `${url.protocol}//${url.host}`,
-    token,
-    label: `${url.hostname}:${port}`,
-  };
 }
 
 function parseDirectJson(value: Record<string, unknown>): DirectSessionPayload | null {
@@ -131,11 +79,7 @@ function parseDirectJson(value: Record<string, unknown>): DirectSessionPayload |
     publicKey: value.publicKey,
     expiresAt: value.expiresAt,
   };
-  return {
-    kind: 'direct',
-    payload,
-    label: `${payload.host}:${payload.port}`,
-  };
+  return { kind: 'direct', payload, label: `${payload.host}:${payload.port}` };
 }
 
 function parseHotspotJson(value: Record<string, unknown>): HotspotSessionPayload | null {
@@ -161,37 +105,12 @@ function parseHotspotJson(value: Record<string, unknown>): HotspotSessionPayload
     publicKey: value.publicKey,
     expiresAt: value.expiresAt,
   };
-  return {
-    kind: 'hotspot',
-    payload,
-    label: payload.ssid,
-  };
+  return { kind: 'hotspot', payload, label: payload.ssid };
 }
 
 export function parseSessionPayload(input: string): ParsedSessionPayload | null {
-  console.info('[dropbeam] parseSessionPayload input (first 200 chars):', input.slice(0, 200));
-
-  // Try raw JSON first, then the pair-URL fragment format used by the desktop.
   const candidate = tryParseJson(input) ?? tryParsePairUrl(input);
-  if (candidate && typeof candidate === 'object') {
-    const obj = candidate as Record<string, unknown>;
-    const hotspot = parseHotspotJson(obj);
-    if (hotspot) {
-      console.info('[dropbeam] parsed as HOTSPOT', { sessionId: hotspot.payload.sessionId, host: hotspot.payload.host });
-      return hotspot;
-    }
-    const direct = parseDirectJson(obj);
-    if (direct) {
-      console.info('[dropbeam] parsed as DIRECT', { sessionId: direct.payload.sessionId, host: direct.payload.host, port: direct.payload.port });
-      return direct;
-    }
-    console.warn('[dropbeam] JSON parsed but neither hotspot nor direct shape matched. Keys:', Object.keys(obj));
-  }
-  const guest = parseGuestUrl(input);
-  if (guest) {
-    console.info('[dropbeam] parsed as GUEST URL', { origin: guest.origin });
-  } else {
-    console.warn('[dropbeam] parseSessionPayload — no shape matched, returning null');
-  }
-  return guest;
+  if (!candidate || typeof candidate !== 'object') return null;
+  const obj = candidate as Record<string, unknown>;
+  return parseHotspotJson(obj) ?? parseDirectJson(obj);
 }

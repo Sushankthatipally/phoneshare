@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react';
 
-import { SendScreenView } from '../src/screens/SendScreen.js';
-import { OnboardingScreen } from '../src/screens/OnboardingScreen.js';
-import { PermissionScreen } from '../src/screens/PermissionScreen.js';
-import { ScrollView, Text, View } from '../src/lib/native.js';
-import { useConnection } from '../src/lib/connection.js';
+import { SendScreenView } from '../../src/screens/SendScreen.js';
+import { OnboardingScreen } from '../../src/screens/OnboardingScreen.js';
+import { PermissionScreen } from '../../src/screens/PermissionScreen.js';
+import { ScrollView, Text, View } from '../../src/lib/native.js';
+import { useConnection } from '../../src/lib/connection.js';
 
 type Step = 'permissions' | 'name' | 'done';
 

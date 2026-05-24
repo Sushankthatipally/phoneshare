@@ -249,12 +249,26 @@ export function useDiscovery(options: UseDiscoveryOptions = {}): DiscoveryState 
       flush();
     };
 
-    zc.on('start', () => setState((current) => ({ ...current, scanning: true })));
-    zc.on('stop', () => setState((current) => ({ ...current, scanning: false })));
-    zc.on('resolved', upsert);
+    zc.on('start', () => {
+      console.info('[discovery] zeroconf start');
+      setState((current) => ({ ...current, scanning: true }));
+    });
+    zc.on('stop', () => {
+      console.info('[discovery] zeroconf stop');
+      setState((current) => ({ ...current, scanning: false }));
+    });
+    zc.on('found', (name: unknown) => console.info('[discovery] found', name));
+    zc.on('resolved', (raw: unknown) => {
+      console.info('[discovery] resolved', raw);
+      upsert(raw);
+    });
     zc.on('update', flush);
-    zc.on('remove', remove);
+    zc.on('remove', (raw: unknown) => {
+      console.info('[discovery] remove', raw);
+      remove(raw);
+    });
     zc.on('error', (err: unknown) => {
+      console.warn('[discovery] error', err);
       setState((current) => ({
         ...current,
         error: err instanceof Error ? err.message : 'zeroconf error',

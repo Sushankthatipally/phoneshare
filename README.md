@@ -1,35 +1,88 @@
 # DropBeam
 
-DropBeam is an offline-first local file transfer project focused on fast desktop-to-phone handoff over WiFi, hotspot, QR, or cable, with a native desktop shell and a native mobile scaffold.
+DropBeam is a local-network file transfer app. Native desktop (Tauri + React)
+and native mobile (Expo / React Native). No accounts, no cloud, no QR pairing
+or PIN — devices on the same Wi-Fi see each other via mDNS, you tap a device
+to send. Encryption is invisible: ECDH + AES-GCM under the hood, no UI for it.
 
-This repository now includes the native migration surface and keeps the visual language intentionally dark, glassy, and high-contrast:
+## Product shape
 
-- `apps/desktop` for the desktop control surface
-- `apps/mobile` for the shared native mobile scaffold
-- `packages/local-backend` for the current desktop-side runtime
-- `packages/protocol` for shared transport and session contracts
-- `packages/shared-ui` for shared UI primitives
-- `packages/crypto-core` for pairing and crypto primitives
-- `docs/` for architecture, migration notes, and product planning
+- **Desktop**: left rail with Receive · Send · Settings. Default tab is
+  Receive, which shows this device's friendly name + hashtag + Quick Save
+  toggle. Send shows four selection cards (File / Folder / Text / Paste) and
+  a list of nearby devices. Settings holds Profile + Quick Save + Favorites
+  plus Trusted Devices / Watch Folders / Shell Integration / Benchmark.
+- **Mobile (Android)**: bottom tab bar with Receive · Send · Settings.
+  Identical aesthetic (dark glass), same four selection types, same Quick
+  Save tri-state.
+- **iOS**: parked. Sideload requires a Mac.
 
-## Current scope
+## Discovery lanes
 
-The current product is migrating toward the native-only plan:
+mDNS (`_dropbeam._tcp`) is the primary discovery lane. Fallbacks for when
+multicast is blocked:
 
-- The legacy `apps/iphone-web` surface has been removed from the active workspace
-- `apps/mobile` now contains native-plan scaffolding for QR discovery, mDNS, hotspot, TCP, and transfer flows
-- The mobile scaffold stays focused on QR, LAN, hotspot, and USB lanes
-- Desktop and protocol work remain in place, but this cleanup keeps the browser/PWA surface out of the active path
+1. **USB tunnel** — `adb reverse tcp:17619 tcp:17619`, the phone then sees a
+   synthetic `USB Desktop` peer at the top of Nearby devices.
+2. **Manual IP** — enter the desktop's LAN IP in the Send tab's fallback
+   form.
 
-## Getting started
+## Install + run
 
-```bash
+```powershell
 pnpm install
-pnpm dev
+pnpm dev:desktop                                            # Tauri shell
+pnpm --filter @dropbeam/local-backend run bundle:exe        # sidecar binary
+pnpm dev:mobile                                             # Expo, Android target
+pnpm dev:web                                                # mobile UI in browser
 ```
 
-## Next milestones
+JDK 17 is required for Android builds. Windows Firewall must allow UDP 5353
+inbound on the LAN interface for mDNS to work — add the rule:
 
-1. Fill in the native mobile modules for QR scanning, discovery, transport, and file handoff.
-2. Wire the desktop runtime to the native wire protocol once the mobile scaffold is stable.
-3. Add platform build tooling when you want to move from scaffold to a runnable RN app.
+```powershell
+New-NetFirewallRule -DisplayName "DropBeam mDNS" -Direction Inbound `
+  -Protocol UDP -LocalPort 5353 -Action Allow
+```
+
+## Send types
+
+| Type    | What happens                                                        |
+|---------|---------------------------------------------------------------------|
+| File    | Native file picker → transfer batch.                                |
+| Folder  | Picks a directory, zips it, transfers as one `.zip`.                |
+| Text    | Opens a note pad; saves as `Note-<HH:MM>.txt`.                      |
+| Paste   | Pulls clipboard; saves as `Pasted-<HH:MM>.txt`.                     |
+
+Received `.txt` files preview inline on the Receive tab.
+
+## Repository layout
+
+| Path                          | What lives here                                |
+|-------------------------------|------------------------------------------------|
+| `apps/desktop`                | Tauri + React shell                            |
+| `apps/mobile`                 | Expo (React Native) app                        |
+| `packages/local-backend`      | Node sidecar (HTTP + mDNS + storage)           |
+| `packages/protocol`           | Shared types and HTTP client                   |
+| `packages/crypto-core`        | X25519 / HKDF / AES-GCM primitives             |
+| `packages/shared-ui`          | Web design primitives                          |
+| `packages/shared-ui-rn`       | RN design primitives + design tokens           |
+| `docs/`                       | Architecture, protocol, security, MVP slice    |
+
+## Hard-won lessons
+
+- `react-native-quick-crypto@0.7.x` has no X25519/HKDF — pure-JS overrides
+  live in `packages/crypto-core/src/rn.ts`. Don't upgrade.
+- `react-native-quick-base64@2.1.2` + `@craftzdog/react-native-buffer@6.0.5`
+  are pinned via root `package.json` pnpm overrides for RN 0.76 autolinking.
+- Metro requires `unstable_enablePackageExports: true` for the
+  `@dropbeam/crypto-core/rn` subpath import.
+- iPhone Personal Hotspot blocks multicast; mDNS won't work — USB and
+  manual IP are the only fallbacks there.
+- Rebuild the sidecar with `pnpm --filter @dropbeam/local-backend run
+  bundle:exe` after any change in `packages/local-backend/src/**`.
+
+## Version
+
+`v0.3.0` — redesign v2 (Receive identity layout, bottom tabs, dark glass
+parity, Text + Paste, mDNS-first discovery).
