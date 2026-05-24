@@ -8,10 +8,9 @@ import { useClipboardSync } from '../lib/clipboard-sync.js';
 import { useConnection } from '../lib/connection.js';
 import { useDiscovery } from '../lib/discovery.js';
 
-const TABS: ReadonlyArray<{ path: '/' | '/send' | '/history'; label: string }> = [
-  { path: '/', label: 'Connect' },
-  { path: '/send', label: 'Send' },
-  { path: '/history', label: 'History' },
+const TABS: ReadonlyArray<{ path: '/' | '/receive'; label: string }> = [
+  { path: '/', label: 'Send' },
+  { path: '/receive', label: 'Receive' },
 ];
 
 export function MobileChrome({ children }: PropsWithChildren) {
@@ -68,8 +67,13 @@ export function MobileChrome({ children }: PropsWithChildren) {
             <Text style={styles.brandSub}>Mobile</Text>
           </View>
         </View>
-        <View style={[styles.statusPill, connection ? styles.statusPillOn : styles.statusPillOff]}>
-          <Text style={styles.statusPillText}>{connection ? `Paired · ${connection.label}` : 'Not connected'}</Text>
+        <View style={styles.headerRight}>
+          <View style={[styles.statusPill, connection ? styles.statusPillOn : styles.statusPillOff]}>
+            <Text style={styles.statusPillText}>{connection ? `Paired · ${connection.label}` : 'Not connected'}</Text>
+          </View>
+          <Pressable onPress={() => router.push('/settings')} hitSlop={10} style={styles.gearButton}>
+            <Text style={styles.gearIcon}>⚙︎</Text>
+          </Pressable>
         </View>
       </View>
 
@@ -133,6 +137,19 @@ const styles = {
     fontSize: 11,
     letterSpacing: 1,
     textTransform: 'uppercase' as const,
+  },
+  headerRight: {
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    gap: 8,
+  },
+  gearButton: {
+    paddingHorizontal: 6,
+    paddingVertical: 4,
+  },
+  gearIcon: {
+    color: '#cccccc',
+    fontSize: 20,
   },
   statusPill: {
     borderRadius: 999,

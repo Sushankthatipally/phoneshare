@@ -1,228 +1,342 @@
-import { useState } from 'react';
-import { StyleSheet } from 'react-native';
+import { useCallback, useMemo, useState } from 'react';
+import { StyleSheet, ActivityIndicator } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
-import { useRouter } from 'expo-router';
+import * as Clipboard from 'expo-clipboard';
+import { GlassPanel, SectionHeading, tokens } from '@dropbeam/shared-ui-rn';
 
-import { Button, ScrollView, Text, View } from '../lib/native.js';
-import { uploadGuestFile } from '../lib/api.js';
+import { Pressable, ScrollView, Text, TextInput, View } from '../lib/native.js';
+import { DeviceCard } from '../components/DeviceCard.js';
+import { SelectionCard } from '../components/SelectionCard.js';
 import { useConnection } from '../lib/connection.js';
+import { useDiscovery, type DiscoveredPeer } from '../lib/discovery.js';
+import { useMobileIdentity } from '../lib/identity.js';
+import { pickFolderFiles } from '../lib/folder-send.js';
+
+type SelectionKind = 'file' | 'folder' | 'text' | 'paste';
+
+interface SelectionItem {
+  id: string;
+  kind: SelectionKind;
+  name: string;
+  size: number;
+  uri?: string;
+  text?: string;
+}
 
 function formatBytes(bytes: number): string {
   if (!bytes) return '0 B';
   const units = ['B', 'KB', 'MB', 'GB'];
   let value = bytes;
-  let index = 0;
-  while (value >= 1024 && index < units.length - 1) {
+  let i = 0;
+  while (value >= 1024 && i < units.length - 1) {
     value /= 1024;
-    index += 1;
+    i += 1;
   }
-  return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[index]}`;
+  return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[i]}`;
 }
 
 export function SendScreenView() {
-  const { connection, history, addHistory, updateHistory } = useConnection();
+  const { deviceFingerprint } = useConnection();
+  const identity = useMobileIdentity(deviceFingerprint);
+  const { peers, available } = useDiscovery({});
+  const [selection, setSelection] = useState<SelectionItem[]>([]);
+  const [textDraft, setTextDraft] = useState('');
+  const [showTextModal, setShowTextModal] = useState(false);
   const [busy, setBusy] = useState(false);
-  const router = useRouter();
+  const [emptyHint, setEmptyHint] = useState<string | null>(null);
 
-  if (!connection) {
-    return (
-      <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.scroll}>
-        <View style={styles.card}>
-          <Text style={styles.eyebrow}>NOT CONNECTED</Text>
-          <Text style={styles.title}>Connect to a desktop first</Text>
-          <Text style={styles.copy}>Open the Connect tab to scan a QR or paste the share URL from the desktop app.</Text>
-          <Button onPress={() => router.replace('/')}>Go to Connect</Button>
-        </View>
-      </ScrollView>
-    );
-  }
+  const totalBytes = useMemo(() => selection.reduce((sum, item) => sum + item.size, 0), [selection]);
 
-  if (connection.kind !== 'guest') {
-    return (
-      <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.scroll}>
-        <View style={styles.card}>
-          <Text style={styles.eyebrow}>SECURE SESSION</Text>
-          <Text style={styles.title}>Paired with {connection.label}</Text>
-          <Text style={styles.copy}>
-            Native send is wired up in W15. For now, secure sessions only support receive; switch to a guest share URL to upload.
-          </Text>
-        </View>
-      </ScrollView>
-    );
-  }
-
-  const guest = connection;
-
-  const pickAndUpload = async () => {
+  const onPickFile = useCallback(async () => {
     setBusy(true);
     try {
-      const result = await DocumentPicker.getDocumentAsync({
-        copyToCacheDirectory: true,
-        multiple: true,
-        type: '*/*',
-      });
-      if (result.canceled) {
-        return;
-      }
-      for (const asset of result.assets) {
-        const id = `${Date.now()}-${asset.name}`;
-        addHistory({
-          id,
-          name: asset.name,
-          size: asset.size ?? 0,
-          status: 'uploading',
-          progress: 0,
-          createdAt: Date.now(),
-        });
-        try {
-          const response = await uploadGuestFile({
-            connection: guest,
-            fileUri: asset.uri,
-            name: asset.name,
-            size: asset.size ?? 0,
-            mimeType: asset.mimeType ?? 'application/octet-stream',
-            onProgress: (pct) => updateHistory(id, { progress: pct }),
-          });
-          if (response.ok) {
-            updateHistory(id, { status: 'done', progress: 100 });
-          } else {
-            updateHistory(id, { status: 'failed', error: `HTTP ${response.status}` });
-          }
-        } catch (error) {
-          updateHistory(id, { status: 'failed', error: error instanceof Error ? error.message : String(error) });
-        }
-      }
+      const result = await DocumentPicker.getDocumentAsync({ multiple: true, copyToCacheDirectory: true });
+      if (result.canceled) return;
+      const added: SelectionItem[] = result.assets.map((asset) => ({
+        id: `file:${asset.uri}:${Date.now()}`,
+        kind: 'file',
+        name: asset.name,
+        size: asset.size ?? 0,
+        uri: asset.uri,
+      }));
+      setSelection((prev) => [...prev, ...added]);
     } finally {
       setBusy(false);
     }
-  };
+  }, []);
 
-  const inFlight = history.filter((h) => h.status === 'uploading');
-  const recent = history.slice(0, 5);
+  const onPickFolder = useCallback(async () => {
+    setBusy(true);
+    try {
+      const result = await pickFolderFiles();
+      if (!result || !result.files.length) return;
+      const added: SelectionItem[] = result.files.map((file) => ({
+        id: `folder:${file.uri}:${Date.now()}`,
+        kind: 'folder',
+        name: file.relativePath || file.name,
+        size: file.size,
+        uri: file.uri,
+      }));
+      setSelection((prev) => [...prev, ...added]);
+      if (result.note) setEmptyHint(result.note);
+    } catch (err) {
+      setEmptyHint(err instanceof Error ? err.message : 'Failed to pick folder');
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
+  const onPasteText = useCallback(async () => {
+    try {
+      const text = await Clipboard.getStringAsync();
+      if (!text) {
+        setEmptyHint('Clipboard is empty');
+        return;
+      }
+      const id = `paste:${Date.now()}`;
+      setSelection((prev) => [
+        ...prev,
+        { id, kind: 'paste', name: `Pasted ${new Date().toISOString().slice(11, 16)}.txt`, size: new Blob([text]).size, text },
+      ]);
+    } catch (err) {
+      setEmptyHint(err instanceof Error ? err.message : 'Clipboard unavailable');
+    }
+  }, []);
+
+  const submitText = useCallback(() => {
+    const trimmed = textDraft.trim();
+    if (!trimmed) {
+      setShowTextModal(false);
+      return;
+    }
+    const id = `text:${Date.now()}`;
+    setSelection((prev) => [
+      ...prev,
+      {
+        id,
+        kind: 'text',
+        name: `Note ${new Date().toISOString().slice(11, 16)}.txt`,
+        size: new Blob([trimmed]).size,
+        text: trimmed,
+      },
+    ]);
+    setTextDraft('');
+    setShowTextModal(false);
+  }, [textDraft]);
+
+  const clearSelection = useCallback(() => setSelection([]), []);
+
+  const onTapDevice = useCallback(
+    (peer: DiscoveredPeer) => {
+      if (!selection.length) {
+        setEmptyHint('Pick what to send first');
+        return;
+      }
+      setEmptyHint(`Sending to ${peer.txt?.n ?? peer.name}…`);
+      // Actual handshake + transfer wired up in Phase D.
+    },
+    [selection.length],
+  );
 
   return (
-    <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.scroll}>
-      <View style={styles.card}>
-        <Text style={styles.eyebrow}>SEND</Text>
-        <Text style={styles.title}>Upload to {guest.label}</Text>
-        <Text style={styles.copy}>Pick one or more files. They'll upload directly to your desktop's DropBeam app.</Text>
-        <Button disabled={busy} onPress={() => void pickAndUpload()}>
-          {busy ? 'Picking…' : 'Pick files'}
-        </Button>
+    <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
+      <SectionHeading eyebrow="Selection" title="What do you want to send?" />
+      <View style={styles.selectionRow}>
+        <SelectionCard icon="📄" label="File" onPress={onPickFile} disabled={busy} />
+        <SelectionCard icon="📁" label="Folder" onPress={onPickFolder} disabled={busy} />
+        <SelectionCard icon="✏️" label="Text" onPress={() => setShowTextModal(true)} />
+        <SelectionCard icon="📋" label="Paste" onPress={onPasteText} />
       </View>
 
-      {inFlight.length ? (
-        <View style={styles.card}>
-          <Text style={styles.eyebrow}>IN FLIGHT</Text>
-          {inFlight.map((entry) => (
-            <View key={entry.id} style={styles.row}>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.rowName}>{entry.name}</Text>
-                <Text style={styles.rowMeta}>{formatBytes(entry.size)} · {entry.progress}%</Text>
-              </View>
-              <View style={styles.progressTrack}>
-                <View style={[styles.progressFill, { width: `${Math.max(2, entry.progress)}%` }]} />
-              </View>
-            </View>
-          ))}
-        </View>
+      {selection.length ? (
+        <GlassPanel style={styles.selectionSummary}>
+          <Text style={styles.selectionSummaryText}>
+            {selection.length} item{selection.length === 1 ? '' : 's'} · {formatBytes(totalBytes)}
+          </Text>
+          <Pressable onPress={clearSelection} style={styles.clearButton}>
+            <Text style={styles.clearButtonText}>Clear</Text>
+          </Pressable>
+        </GlassPanel>
       ) : null}
 
-      {recent.length ? (
-        <View style={styles.card}>
-          <Text style={styles.eyebrow}>RECENT</Text>
-          {recent.map((entry) => (
-            <View key={entry.id} style={styles.row}>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.rowName}>{entry.name}</Text>
-                <Text style={styles.rowMeta}>
-                  {formatBytes(entry.size)} ·{' '}
-                  {entry.status === 'done' ? 'sent' : entry.status === 'failed' ? `failed (${entry.error})` : `${entry.progress}%`}
-                </Text>
-              </View>
-              <Text style={[styles.badge, entry.status === 'done' ? styles.badgeOk : entry.status === 'failed' ? styles.badgeBad : styles.badgeBusy]}>
-                {entry.status}
-              </Text>
-            </View>
+      {showTextModal ? (
+        <GlassPanel style={styles.textModal}>
+          <Text style={styles.textModalLabel}>Type a note</Text>
+          <TextInput
+            value={textDraft}
+            onChangeText={setTextDraft}
+            placeholder="Type here…"
+            multiline
+            style={styles.textInput}
+          />
+          <View style={styles.textModalRow}>
+            <Pressable
+              onPress={() => {
+                setTextDraft('');
+                setShowTextModal(false);
+              }}
+              style={styles.ghostButton}
+            >
+              <Text style={styles.ghostButtonText}>Cancel</Text>
+            </Pressable>
+            <Pressable onPress={submitText} style={styles.primaryButton}>
+              <Text style={styles.primaryButtonText}>Add to selection</Text>
+            </Pressable>
+          </View>
+        </GlassPanel>
+      ) : null}
+
+      <SectionHeading eyebrow="Nearby" title="Nearby devices" />
+
+      {emptyHint ? <Text style={styles.hint}>{emptyHint}</Text> : null}
+
+      {peers.length === 0 ? (
+        <GlassPanel style={styles.emptyState}>
+          <ActivityIndicator color={tokens.color.textSoft} />
+          <Text style={styles.emptyTitle}>Looking nearby…</Text>
+          <Text style={styles.emptyCopy}>
+            {available
+              ? 'Searching the local network for DropBeam devices.'
+              : 'mDNS unavailable on this build — use USB tunnel or enter an IP.'}
+          </Text>
+        </GlassPanel>
+      ) : (
+        <View style={styles.deviceList}>
+          {peers.map((peer) => (
+            <DeviceCard
+              key={peer.id}
+              peer={peer}
+              isFavorite={identity.isFavorite(peer.fingerprint ?? '')}
+              transport={(peer.txt?.transport as string) ?? null}
+              onPress={() => onTapDevice(peer)}
+              onToggleFavorite={() => identity.toggleFavorite(peer.fingerprint ?? '')}
+            />
           ))}
         </View>
-      ) : null}
+      )}
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
   scroll: {
-    gap: 14,
-    padding: 16,
+    flex: 1,
+    backgroundColor: tokens.color.bg,
   },
-  card: {
-    backgroundColor: '#0a0a0a',
-    borderColor: '#1f1f1f',
-    borderRadius: 18,
-    borderWidth: 1,
-    gap: 10,
-    padding: 16,
+  scrollContent: {
+    padding: tokens.spacing.lg,
+    gap: tokens.spacing.lg,
   },
-  eyebrow: {
-    color: '#7a7a7a',
-    fontSize: 11,
-    fontWeight: '800',
-    letterSpacing: 1.5,
-  },
-  title: {
-    color: '#ffffff',
-    fontSize: 20,
-    fontWeight: '800',
-  },
-  copy: {
-    color: '#b8b8b8',
-    lineHeight: 20,
-  },
-  row: {
-    alignItems: 'center',
+  selectionRow: {
     flexDirection: 'row',
-    gap: 10,
-    paddingVertical: 6,
+    gap: tokens.spacing.sm,
   },
-  rowName: {
-    color: '#ffffff',
-    fontWeight: '700',
+  selectionSummary: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: tokens.spacing.md,
+    paddingHorizontal: tokens.spacing.lg,
   },
-  rowMeta: {
-    color: '#8a8a8a',
-    fontSize: 12,
+  selectionSummaryText: {
+    fontFamily: tokens.fontFamily.sans,
+    fontSize: tokens.fontSize.body,
+    color: tokens.color.text,
+    fontWeight: tokens.fontWeight.medium,
   },
-  progressTrack: {
-    backgroundColor: '#1a1a1a',
-    borderRadius: 999,
-    height: 6,
-    overflow: 'hidden',
-    width: 100,
+  clearButton: {
+    paddingHorizontal: tokens.spacing.md,
+    paddingVertical: tokens.spacing.xs,
+    borderRadius: tokens.radius.pill,
+    borderWidth: 1,
+    borderColor: tokens.color.panelBorder,
   },
-  progressFill: {
-    backgroundColor: '#3a8bff',
-    height: 6,
+  clearButtonText: {
+    fontFamily: tokens.fontFamily.sans,
+    fontSize: tokens.fontSize.caption,
+    color: tokens.color.textSoft,
+    fontWeight: tokens.fontWeight.semibold,
+    letterSpacing: tokens.letterSpacing.wide,
   },
-  badge: {
-    borderRadius: 999,
-    fontSize: 11,
-    fontWeight: '700',
-    overflow: 'hidden',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
+  textModal: {
+    padding: tokens.spacing.lg,
+    gap: tokens.spacing.md,
+  },
+  textModalLabel: {
+    fontFamily: tokens.fontFamily.sans,
+    fontSize: tokens.fontSize.xs,
+    fontWeight: tokens.fontWeight.semibold,
+    color: tokens.color.textSoft,
+    letterSpacing: tokens.letterSpacing.widest,
     textTransform: 'uppercase',
   },
-  badgeOk: {
-    backgroundColor: '#0e2a14',
-    color: '#9ee0a8',
+  textInput: {
+    minHeight: 120,
+    borderRadius: tokens.radius.lg,
+    borderWidth: 1,
+    borderColor: tokens.color.panelBorder,
+    backgroundColor: tokens.color.inputBg,
+    color: tokens.color.text,
+    padding: tokens.spacing.md,
+    fontSize: tokens.fontSize.base,
+    fontFamily: tokens.fontFamily.sans,
+    textAlignVertical: 'top',
   },
-  badgeBad: {
-    backgroundColor: '#2a0e0e',
-    color: '#ffb0b0',
+  textModalRow: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: tokens.spacing.sm,
   },
-  badgeBusy: {
-    backgroundColor: '#0e1f2a',
-    color: '#a8d2ff',
+  primaryButton: {
+    paddingHorizontal: tokens.spacing.lg,
+    paddingVertical: tokens.spacing.sm,
+    backgroundColor: tokens.color.text,
+    borderRadius: tokens.radius.lg,
+  },
+  primaryButtonText: {
+    fontFamily: tokens.fontFamily.sans,
+    fontSize: tokens.fontSize.sm,
+    fontWeight: tokens.fontWeight.semibold,
+    color: tokens.color.textInverse,
+  },
+  ghostButton: {
+    paddingHorizontal: tokens.spacing.lg,
+    paddingVertical: tokens.spacing.sm,
+    borderRadius: tokens.radius.lg,
+    borderWidth: 1,
+    borderColor: tokens.color.panelBorder,
+  },
+  ghostButtonText: {
+    fontFamily: tokens.fontFamily.sans,
+    fontSize: tokens.fontSize.sm,
+    fontWeight: tokens.fontWeight.semibold,
+    color: tokens.color.textSoft,
+  },
+  hint: {
+    fontFamily: tokens.fontFamily.sans,
+    fontSize: tokens.fontSize.sm,
+    color: tokens.color.textSoft,
+    lineHeight: tokens.fontSize.sm * tokens.lineHeight.body,
+  },
+  emptyState: {
+    padding: tokens.spacing.xl,
+    alignItems: 'center',
+    gap: tokens.spacing.sm,
+  },
+  emptyTitle: {
+    fontFamily: tokens.fontFamily.sans,
+    fontSize: tokens.fontSize.bodyLg,
+    fontWeight: tokens.fontWeight.semibold,
+    color: tokens.color.text,
+  },
+  emptyCopy: {
+    fontFamily: tokens.fontFamily.sans,
+    fontSize: tokens.fontSize.sm,
+    color: tokens.color.textSoft,
+    textAlign: 'center',
+    lineHeight: tokens.fontSize.sm * tokens.lineHeight.body,
+  },
+  deviceList: {
+    gap: tokens.spacing.sm,
   },
 });

@@ -1,5 +1,5 @@
-import { Redirect } from 'expo-router';
+import { ReceiveScreen } from '../src/screens/ReceiveScreen.js';
 
 export default function ReceiveRoute() {
-  return <Redirect href="/history" />;
+  return <ReceiveScreen />;
 }

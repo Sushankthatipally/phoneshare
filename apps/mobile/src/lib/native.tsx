@@ -64,11 +64,18 @@ export function Pressable({
   style,
   onPress,
   disabled,
-}: PropsWithChildren<{ style?: AnyStyle; onPress?: () => void; disabled?: boolean }>) {
+  hitSlop,
+}: PropsWithChildren<{
+  style?: AnyStyle | ((state: { pressed: boolean }) => AnyStyle);
+  onPress?: () => void;
+  disabled?: boolean;
+  hitSlop?: number | { top?: number; right?: number; bottom?: number; left?: number };
+}>) {
   return (
     <RNPressable
       disabled={disabled}
       onPress={onPress}
+      hitSlop={hitSlop}
       style={style as StyleProp<ViewStyle>}
     >
       {children}
@@ -81,17 +88,25 @@ export function TextInput({
   onChangeText,
   value,
   placeholder,
+  multiline,
+  numberOfLines,
+  placeholderTextColor,
 }: {
   style?: AnyStyle;
   onChangeText?: (value: string) => void;
   value: string;
   placeholder?: string;
+  multiline?: boolean;
+  numberOfLines?: number;
+  placeholderTextColor?: string;
 }) {
   return (
     <RNTextInput
       onChangeText={onChangeText}
       placeholder={placeholder}
-      placeholderTextColor="#5b7894"
+      placeholderTextColor={placeholderTextColor ?? '#5b7894'}
+      multiline={multiline}
+      numberOfLines={numberOfLines}
       style={[
         {
           backgroundColor: '#0a1320',
