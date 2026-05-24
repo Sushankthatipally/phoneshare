@@ -26,6 +26,7 @@ const store = new LocalBackendStore({
 const discovery = new BackendDiscoveryService({
   deviceProvider: () => store.getLocalDiscoveryDevice(),
   emit: (type, payload) => broadcast(type, payload),
+  txtProvider: () => store.getDiscoveryTxt() ?? {},
   host,
   port,
 });
@@ -39,10 +40,16 @@ store.onPeerConnected((fingerprint) => watchFolders.notePeerConnected(fingerprin
 // Boot asynchronously so the source compiles to CJS (no top-level await).
 void (async function bootBackend() {
   await store.init();
+  try {
+    await store.ensureDiscoverySession();
+  } catch (error) {
+    console.warn(`discovery session bootstrap failed: ${error?.message ?? error}`);
+  }
   // Discovery (UDP mDNS) is best-effort — if the port is busy or blocked we
   // still want HTTP available so the desktop UI loads.
   try {
     await discovery.start();
+    await discovery.refreshAdvertisement();
   } catch (error) {
     console.warn(`DropBeam discovery disabled: ${error?.message ?? error}`);
   }
@@ -115,9 +122,31 @@ async function handleRequest(req, res) {
   if (req.method === 'GET' && pathname === '/api/settings') {
     return sendJson(res, 200, { ok: true, settings: store.getSettings() });
   }
-  if (req.method === 'POST' && pathname === '/api/settings') {
+  if ((req.method === 'POST' || req.method === 'PATCH') && pathname === '/api/settings') {
     const body = await readJson(req);
     return sendJson(res, 200, { ok: true, settings: await store.updateSettings(body ?? {}) });
+  }
+  if (req.method === 'POST' && pathname === '/api/settings/regenerate-name') {
+    return sendJson(res, 200, { ok: true, settings: await store.regenerateFriendlyName() });
+  }
+
+  // ─── Favorites ──────────────────────────────────────────
+  if (req.method === 'GET' && pathname === '/api/favorites') {
+    return sendJson(res, 200, { ok: true, favorites: store.listFavorites() });
+  }
+  if (req.method === 'POST' && pathname === '/api/favorites') {
+    const body = await readJson(req);
+    return sendJson(res, 200, {
+      ok: true,
+      favorites: await store.addFavorite(body?.fingerprint),
+    });
+  }
+  if (req.method === 'DELETE' && pathname.startsWith('/api/favorites/')) {
+    const fingerprint = decodeURIComponent(pathname.slice('/api/favorites/'.length));
+    return sendJson(res, 200, {
+      ok: true,
+      favorites: await store.removeFavorite(fingerprint),
+    });
   }
 
   // ─── Clipboard ──────────────────────────────────────────

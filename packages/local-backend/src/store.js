@@ -25,6 +25,7 @@ import {
   importPrivateKeyJwk,
   zeroBuffer,
 } from './crypto.js';
+import { generateFriendlyName, generateRandomFriendlyName, computeHashtag } from './friendly-name.js';
 
 const QR_TTL_MS = 10 * 60 * 1000;
 const GUEST_TTL_MS = 60 * 60 * 1000;
@@ -46,9 +47,16 @@ const DEFAULT_SETTINGS = {
   onboardingComplete: false,
   clipboardSyncEnabled: false,
   watchFolders: [],
+  deviceFingerprint: '',
+  friendlyName: '',
+  hashtag: '',
+  quickSave: 'off',
+  favorites: [],
   createdAt: new Date().toISOString(),
   updatedAt: new Date().toISOString(),
 };
+
+const QUICK_SAVE_VALUES = new Set(['off', 'favorites', 'on']);
 
 const SESSION_STATES = {
   pairing: 'pairing',
@@ -113,6 +121,64 @@ export class LocalBackendStore {
     await mkdir(this.filesDir, { recursive: true });
     await mkdir(this.guestDir, { recursive: true });
     await this.loadState();
+    await this.ensureIdentity();
+  }
+
+  // Returns the always-active discovery session's pk + sid for mDNS TXT records.
+  // null if no discovery session exists yet (init not complete).
+  getDiscoveryTxt() {
+    const session = [...this.sessions.values()].find((s) => s.meta?.discovery && s.state === SESSION_STATES.pairing);
+    if (!session) return null;
+    return {
+      sessionId: session.id,
+      publicKey: session.pairing?.qrPayload?.publicKey ?? null,
+    };
+  }
+
+  // Ensure a single always-active discovery session exists. Called on init and
+  // after a discovery session graduates so the next phone has fresh keys.
+  async ensureDiscoverySession() {
+    const existing = [...this.sessions.values()].find(
+      (s) => s.meta?.discovery && s.state === SESSION_STATES.pairing,
+    );
+    if (existing) return existing;
+    const session = await this.createSession({ mode: 'wifi' });
+    const stored = this.sessions.get(session.id);
+    if (stored) {
+      stored.meta = { ...(stored.meta ?? {}), discovery: true };
+      await this.persist();
+    }
+    return stored;
+  }
+
+  // Backfill friendlyName, hashtag, and deviceFingerprint on first boot or for
+  // legacy state files that pre-date these fields. Persists if anything changed.
+  async ensureIdentity() {
+    let dirty = false;
+    if (!this.settings.deviceFingerprint) {
+      this.settings.deviceFingerprint = randomUUID().replace(/-/g, '');
+      dirty = true;
+    }
+    if (!this.settings.friendlyName) {
+      this.settings.friendlyName = generateFriendlyName(this.settings.deviceFingerprint);
+      dirty = true;
+    }
+    if (!this.settings.hashtag) {
+      this.settings.hashtag = computeHashtag(this.settings.deviceFingerprint);
+      dirty = true;
+    }
+    if (!QUICK_SAVE_VALUES.has(this.settings.quickSave)) {
+      this.settings.quickSave = 'off';
+      dirty = true;
+    }
+    if (!Array.isArray(this.settings.favorites)) {
+      this.settings.favorites = [];
+      dirty = true;
+    }
+    if (dirty) {
+      this.settings.updatedAt = new Date().toISOString();
+      await this.persist();
+    }
   }
 
   async loadState() {
@@ -189,6 +255,8 @@ export class LocalBackendStore {
       'onboardingComplete',
       'clipboardSyncEnabled',
       'watchFolders',
+      'friendlyName',
+      'quickSave',
     ];
     for (const key of allowed) {
       if (!(key in patch)) continue;
@@ -204,6 +272,15 @@ export class LocalBackendStore {
         this.settings.clipboardSyncEnabled = Boolean(patch.clipboardSyncEnabled);
         continue;
       }
+      if (key === 'friendlyName') {
+        const next = sanitizeText(patch.friendlyName);
+        if (next) this.settings.friendlyName = next.slice(0, 64);
+        continue;
+      }
+      if (key === 'quickSave') {
+        if (QUICK_SAVE_VALUES.has(patch.quickSave)) this.settings.quickSave = patch.quickSave;
+        continue;
+      }
       this.settings[key] = patch[key];
     }
 
@@ -211,6 +288,47 @@ export class LocalBackendStore {
     await this.persist();
     this.broadcast('settings-updated', { settings: this.getSettings() });
     return this.getSettings();
+  }
+
+  async regenerateFriendlyName() {
+    this.settings.friendlyName = generateRandomFriendlyName();
+    this.settings.updatedAt = new Date().toISOString();
+    await this.persist();
+    this.broadcast('settings-updated', { settings: this.getSettings() });
+    return this.getSettings();
+  }
+
+  // ─── Favorites ────────────────────────────────────────────
+
+  listFavorites() {
+    return [...(this.settings.favorites ?? [])];
+  }
+
+  async addFavorite(fingerprint) {
+    const fp = sanitizeText(fingerprint);
+    if (!fp) throw httpError(400, 'fingerprint is required');
+    const set = new Set(this.settings.favorites ?? []);
+    set.add(fp);
+    this.settings.favorites = [...set];
+    this.settings.updatedAt = new Date().toISOString();
+    await this.persist();
+    this.broadcast('settings-updated', { settings: this.getSettings() });
+    return this.listFavorites();
+  }
+
+  async removeFavorite(fingerprint) {
+    const fp = sanitizeText(fingerprint);
+    if (!fp) throw httpError(400, 'fingerprint is required');
+    this.settings.favorites = (this.settings.favorites ?? []).filter((entry) => entry !== fp);
+    this.settings.updatedAt = new Date().toISOString();
+    await this.persist();
+    this.broadcast('settings-updated', { settings: this.getSettings() });
+    return this.listFavorites();
+  }
+
+  isFavorite(fingerprint) {
+    if (!fingerprint) return false;
+    return (this.settings.favorites ?? []).includes(fingerprint);
   }
 
   // ─── Clipboard ────────────────────────────────────────────
@@ -904,6 +1022,23 @@ export class LocalBackendStore {
 
     await this.persist();
     this.broadcast('transfer-requested', { sessionId, batch });
+
+    // Quick Save: auto-accept incoming batches when the receiver opted in. Only
+    // applies to batches arriving at this side (phone-to-desktop on a desktop,
+    // desktop-to-phone on a phone). The sender's own requests should never
+    // auto-accept locally.
+    const peerFingerprint = session.peerDevice?.fingerprint ?? null;
+    const policy = this.settings.quickSave;
+    const shouldAutoAccept =
+      policy === 'on' ||
+      (policy === 'favorites' && peerFingerprint && this.isFavorite(peerFingerprint));
+    if (shouldAutoAccept) {
+      // Fire-and-forget; surface failures via existing error broadcasts. We do
+      // not await so the request response stays snappy.
+      this.acceptTransferBatch(sessionId, batch.id, {}).catch((err) => {
+        console.warn(`quickSave auto-accept failed: ${err?.message ?? err}`);
+      });
+    }
     return batch;
   }
 
@@ -1071,10 +1206,13 @@ export class LocalBackendStore {
 
   getLocalDiscoveryDevice() {
     return {
-      id: `dropbeam:${sanitizeText(this.settings.deviceName) ?? 'desktop'}:${process.pid}`,
-      name: this.settings.deviceName,
+      id: `dropbeam:${this.settings.deviceFingerprint || 'desktop'}`,
+      name: this.settings.friendlyName || this.settings.deviceName,
       icon: sanitizeDeviceIcon(this.settings.deviceIcon) ?? 'desktop',
       platform: process.platform,
+      fingerprint: this.settings.deviceFingerprint || '',
+      hashtag: this.settings.hashtag || '',
+      friendlyName: this.settings.friendlyName || this.settings.deviceName,
     };
   }
 
