@@ -34,6 +34,8 @@
   --color-qr-dark: #000000;
   --color-qr-light: #ffffff;
   --color-qr-fallback-border: rgba(255, 255, 255, 0.16);
+  --color-overlay: rgba(0, 0, 0, 0.55);
+  --db-overlay: rgba(0, 0, 0, 0.55);
   /* radius */
   --radius-xs: 2px;
   --radius-sm: 4px;
@@ -65,10 +67,13 @@
   --font-size-sm: 13px;
   --font-size-base: 15px;
   --font-size-body: 14px;
+  --font-size-body-lg: 16px;
+  --font-size-caption: 12px;
   --font-size-md: 16px;
   --font-size-lg: 19px;
   --font-size-xl: 24px;
   --font-size-xxl: 32px;
+  --font-size-title: 28px;
   --font-size-pin-digit: 28px;
   /* fontWeight */
   --font-weight-regular: 400;
@@ -82,10 +87,11 @@
   --letter-spacing-wider: 1.2;
   --letter-spacing-widest: 1.8;
   /* lineHeight */
-  --line-height-tight: 1.1px;
-  --line-height-snug: 1.3px;
-  --line-height-normal: 1.5px;
-  --line-height-relaxed: 1.65px;
+  --line-height-tight: 1.1;
+  --line-height-snug: 1.3;
+  --line-height-normal: 1.5;
+  --line-height-body: 1.5;
+  --line-height-relaxed: 1.65;
   /* opacity */
   --opacity-disabled: 0.48;
   --opacity-muted: 0.68;
