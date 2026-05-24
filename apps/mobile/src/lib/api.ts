@@ -128,6 +128,35 @@ export async function reportStorage(params: {
  * Push the phone's clipboard to the desktop so the desktop's clipboard-sync UI
  * can mirror it. The backend wires this into the SSE channel.
  */
+export interface TransferBatchFile {
+  name: string;
+  size: number;
+  mimeType?: string;
+  relativePath?: string;
+}
+
+/**
+ * Request a transfer batch on the desktop backend. The receiver gets a
+ * `transfer-requested` SSE event; if Quick Save is on / favorite-matched the
+ * desktop auto-accepts and broadcasts `transfer-accepted`.
+ */
+export async function requestTransferBatch(params: {
+  origin: string;
+  sessionId: string;
+  direction?: 'desktop-to-phone' | 'phone-to-desktop';
+  deviceName?: string;
+  files: TransferBatchFile[];
+}): Promise<{ ok: boolean; status: number; body: unknown }> {
+  const { origin, sessionId, direction = 'phone-to-desktop', deviceName, files } = params;
+  const response = await fetch(`${origin}/api/sessions/${encodeURIComponent(sessionId)}/transfers`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ direction, deviceName, files }),
+  });
+  const body = await response.json().catch(() => null);
+  return { ok: response.ok, status: response.status, body };
+}
+
 export async function pushClipboard(params: { connection: ConnectionInfo; text: string }): Promise<boolean> {
   try {
     const token = params.connection.kind === 'guest' ? params.connection.token : '';

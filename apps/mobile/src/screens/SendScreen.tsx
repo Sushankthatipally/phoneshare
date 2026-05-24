@@ -11,6 +11,7 @@ import { useConnection } from '../lib/connection.js';
 import { useDiscovery, type DiscoveredPeer } from '../lib/discovery.js';
 import { useMobileIdentity } from '../lib/identity.js';
 import { pickFolderFiles } from '../lib/folder-send.js';
+import { requestTransferBatch } from '../lib/api.js';
 
 type SelectionKind = 'file' | 'folder' | 'text' | 'paste';
 
@@ -36,7 +37,7 @@ function formatBytes(bytes: number): string {
 }
 
 export function SendScreenView() {
-  const { deviceFingerprint } = useConnection();
+  const { deviceFingerprint, deviceName, startDirectHandshake } = useConnection();
   const identity = useMobileIdentity(deviceFingerprint);
   const { peers, available } = useDiscovery({});
   const [selection, setSelection] = useState<SelectionItem[]>([]);
@@ -44,6 +45,7 @@ export function SendScreenView() {
   const [showTextModal, setShowTextModal] = useState(false);
   const [busy, setBusy] = useState(false);
   const [emptyHint, setEmptyHint] = useState<string | null>(null);
+  const [sendingTo, setSendingTo] = useState<string | null>(null);
 
   const totalBytes = useMemo(() => selection.reduce((sum, item) => sum + item.size, 0), [selection]);
 
@@ -127,15 +129,60 @@ export function SendScreenView() {
   const clearSelection = useCallback(() => setSelection([]), []);
 
   const onTapDevice = useCallback(
-    (peer: DiscoveredPeer) => {
+    async (peer: DiscoveredPeer) => {
       if (!selection.length) {
         setEmptyHint('Pick what to send first');
         return;
       }
-      setEmptyHint(`Sending to ${peer.txt?.n ?? peer.name}…`);
-      // Actual handshake + transfer wired up in Phase D.
+      const sid = peer.txt?.sid;
+      const pk = peer.txt?.pk;
+      const peerName = peer.txt?.n ?? peer.name;
+      if (!sid || !pk) {
+        setEmptyHint(`${peerName} not advertising a discovery session — refresh and retry.`);
+        return;
+      }
+      setSendingTo(peer.id);
+      setEmptyHint(`Pairing with ${peerName}…`);
+      const origin = `http://${peer.host}:${peer.port}`;
+      try {
+        await startDirectHandshake({
+          kind: 'direct',
+          label: peerName,
+          payload: {
+            mode: 'wifi',
+            transport: 'wifi',
+            sessionId: sid,
+            host: peer.host,
+            port: peer.port,
+            publicKey: pk,
+            // Discovery TXT does not carry an expiresAt; synthesize a generous
+            // 10-minute window so the handshake passes the freshness check.
+            expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+          },
+        });
+        const batchResult = await requestTransferBatch({
+          origin,
+          sessionId: sid,
+          direction: 'phone-to-desktop',
+          deviceName: identity.friendlyName || deviceName,
+          files: selection.map((item) => ({
+            name: item.name,
+            size: item.size,
+            mimeType: item.kind === 'text' || item.kind === 'paste' ? 'text/plain' : undefined,
+          })),
+        });
+        if (!batchResult.ok) {
+          setEmptyHint(`Batch request failed (${batchResult.status})`);
+          return;
+        }
+        setEmptyHint(`Requested ${selection.length} item${selection.length === 1 ? '' : 's'} → ${peerName}`);
+      } catch (err) {
+        setEmptyHint(err instanceof Error ? err.message : 'Send failed');
+      } finally {
+        setSendingTo(null);
+      }
     },
-    [selection.length],
+    [deviceName, identity.friendlyName, selection, startDirectHandshake],
   );
 
   return (
