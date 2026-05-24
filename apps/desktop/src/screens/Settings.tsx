@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 
 import { Badge, Button } from '@dropbeam/shared-ui';
-import { formatBytes } from '@dropbeam/protocol';
+import { formatBytes, resolveBackendOrigin } from '@dropbeam/protocol';
 
 import type { DesktopBackendState } from '../features/dashboard/useDesktopBackend.js';
+import { QuickSaveToggle, type QuickSaveValue } from '../components/QuickSaveToggle.js';
+
+const BACKEND_ORIGIN = resolveBackendOrigin(import.meta.env.VITE_DROPBEAM_API);
 import {
   isTauri,
   openFolderDialog,
@@ -62,6 +65,9 @@ export function Settings({ backend }: { backend: DesktopBackendState }) {
       </div>
 
       {tab === 'identity' ? (
+        <>
+          <ProfilePanel backend={backend} />
+          <FavoritesPanel backend={backend} />
         <section className="card">
           <p className="card__eyebrow">Identity</p>
           <h2 className="card__title">Device defaults</h2>
@@ -144,6 +150,7 @@ export function Settings({ backend }: { backend: DesktopBackendState }) {
             </div>
           </form>
         </section>
+        </>
       ) : null}
 
       {tab === 'trusted' ? (
@@ -515,6 +522,103 @@ function BenchmarkSection({ backend }: { backend: DesktopBackendState }) {
           />
         </div>
       ) : null}
+    </section>
+  );
+}
+
+function ProfilePanel({ backend }: { backend: DesktopBackendState }) {
+  const friendlyName = (backend.settings?.friendlyName as string | undefined) ?? '';
+  const hashtag = (backend.settings?.hashtag as string | undefined) ?? '';
+  const quickSave = ((backend.settings?.quickSave as QuickSaveValue | undefined) ?? 'off') as QuickSaveValue;
+  const [draft, setDraft] = useState(friendlyName);
+  useEffect(() => setDraft(friendlyName), [friendlyName]);
+
+  return (
+    <section className="card">
+      <p className="card__eyebrow">Profile</p>
+      <h2 className="card__title">Friendly name and Quick Save</h2>
+      <div className="form">
+        <div className="field">
+          <span className="field__label">Friendly name</span>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input
+              className="input"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              style={{ flex: 1 }}
+            />
+            <Button
+              type="button"
+              onClick={() => {
+                void backend.updateSettings({ friendlyName: draft });
+              }}
+              variant="primary"
+            >
+              Save
+            </Button>
+            <Button
+              type="button"
+              onClick={async () => {
+                try {
+                  const res = await fetch(`${BACKEND_ORIGIN}/api/settings/regenerate-name`, { method: 'POST' });
+                  if (res.ok) await backend.refresh?.();
+                } catch {
+                  /* surfaced via backend error state */
+                }
+              }}
+            >
+              Regenerate
+            </Button>
+          </div>
+        </div>
+        <div className="field">
+          <span className="field__label">Hashtag</span>
+          <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--db-text-dim)' }}>{hashtag || '—'}</span>
+        </div>
+        <div className="field">
+          <span className="field__label">Quick Save</span>
+          <QuickSaveToggle
+            value={quickSave}
+            onChange={(next) => {
+              void backend.updateSettings({ quickSave: next });
+            }}
+          />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function FavoritesPanel({ backend }: { backend: DesktopBackendState }) {
+  const favorites = (backend.settings?.favorites as string[] | undefined) ?? [];
+  return (
+    <section className="card">
+      <p className="card__eyebrow">Favorites</p>
+      <h2 className="card__title">Hearted devices</h2>
+      {favorites.length === 0 ? (
+        <p className="card__copy">Heart a device on the Send tab to add it here.</p>
+      ) : (
+        <div className="list">
+          {favorites.map((fp) => (
+            <div className="row" key={fp} style={{ alignItems: 'center' }}>
+              <span style={{ fontFamily: 'var(--font-mono)', flex: 1, overflowWrap: 'anywhere' }}>{fp}</span>
+              <Button
+                type="button"
+                onClick={async () => {
+                  try {
+                    await fetch(`${BACKEND_ORIGIN}/api/favorites/${encodeURIComponent(fp)}`, { method: 'DELETE' });
+                    await backend.refresh?.();
+                  } catch {
+                    /* ignore */
+                  }
+                }}
+              >
+                Remove
+              </Button>
+            </div>
+          ))}
+        </div>
+      )}
     </section>
   );
 }
