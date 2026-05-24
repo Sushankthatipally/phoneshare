@@ -46,6 +46,65 @@ export function SendScreenView() {
   const [busy, setBusy] = useState(false);
   const [emptyHint, setEmptyHint] = useState<string | null>(null);
   const [sendingTo, setSendingTo] = useState<string | null>(null);
+  const [manualIp, setManualIp] = useState('');
+  const [manualPeers, setManualPeers] = useState<DiscoveredPeer[]>([]);
+  const mergedPeers = useMemo(() => {
+    const map = new Map<string, DiscoveredPeer>();
+    for (const p of peers) map.set(p.id, p);
+    for (const p of manualPeers) map.set(p.id, p);
+    return Array.from(map.values()).sort((a, b) => b.lastSeenAt - a.lastSeenAt);
+  }, [peers, manualPeers]);
+
+  const onConnectManualIp = useCallback(async () => {
+    const ip = manualIp.trim();
+    if (!ip) return;
+    setBusy(true);
+    try {
+      const origin = `http://${ip}:17619`;
+      const health = await fetch(`${origin}/api/health`).catch(() => null);
+      if (!health || !health.ok) {
+        setEmptyHint(`Could not reach ${ip}:17619`);
+        return;
+      }
+      let payload: { name?: string; hashtag?: string; platform?: string; fingerprint?: string } = {};
+      try {
+        const disc = await fetch(`${origin}/api/discovery`);
+        const json = (await disc.json()) as { items?: Array<Record<string, unknown>> };
+        const self = json.items?.find((i) => i.source === 'self');
+        if (self) {
+          payload = {
+            name: String(self.friendlyName ?? self.name ?? '') || undefined,
+            hashtag: String(self.hashtag ?? '') || undefined,
+            platform: String(self.platform ?? '') || undefined,
+            fingerprint: String(self.fingerprint ?? '') || undefined,
+          };
+        }
+      } catch {
+        /* discovery is best-effort */
+      }
+      const peer: DiscoveredPeer = {
+        id: `manual:${ip}:17619`,
+        name: payload.name ?? ip,
+        host: ip,
+        port: 17619,
+        fingerprint: payload.fingerprint,
+        icon: 'desktop',
+        txt: {
+          n: payload.name ?? ip,
+          tag: payload.hashtag ?? '',
+          p: payload.platform ?? 'manual',
+          fp: payload.fingerprint ?? '',
+          transport: 'manual',
+        },
+        lastSeenAt: Date.now(),
+      };
+      setManualPeers((prev) => [...prev.filter((p) => p.id !== peer.id), peer]);
+      setEmptyHint(`Added ${payload.name ?? ip}`);
+      setManualIp('');
+    } finally {
+      setBusy(false);
+    }
+  }, [manualIp]);
 
   const totalBytes = useMemo(() => selection.reduce((sum, item) => sum + item.size, 0), [selection]);
 
@@ -237,7 +296,7 @@ export function SendScreenView() {
 
       {emptyHint ? <Text style={styles.hint}>{emptyHint}</Text> : null}
 
-      {peers.length === 0 ? (
+      {mergedPeers.length === 0 ? (
         <GlassPanel style={styles.emptyState}>
           <ActivityIndicator color={tokens.color.textSoft} />
           <Text style={styles.emptyTitle}>Looking nearby…</Text>
@@ -249,7 +308,7 @@ export function SendScreenView() {
         </GlassPanel>
       ) : (
         <View style={styles.deviceList}>
-          {peers.map((peer) => (
+          {mergedPeers.map((peer) => (
             <DeviceCard
               key={peer.id}
               peer={peer}
@@ -261,6 +320,24 @@ export function SendScreenView() {
           ))}
         </View>
       )}
+
+      <GlassPanel style={styles.fallbackPanel}>
+        <Text style={styles.fallbackLabel}>Manual IP</Text>
+        <View style={styles.fallbackRow}>
+          <TextInput
+            value={manualIp}
+            onChangeText={setManualIp}
+            placeholder="192.168.1.42"
+            style={styles.fallbackInput}
+          />
+          <Pressable onPress={onConnectManualIp} disabled={busy} style={styles.primaryButton}>
+            <Text style={styles.primaryButtonText}>Connect</Text>
+          </Pressable>
+        </View>
+        <Text style={styles.emptyCopy}>
+          Wi-Fi blocked? Plug in USB and run `adb reverse tcp:17619 tcp:17619`, or type the desktop's IP above.
+        </Text>
+      </GlassPanel>
     </ScrollView>
   );
 }
@@ -385,5 +462,33 @@ const styles = StyleSheet.create({
   },
   deviceList: {
     gap: tokens.spacing.sm,
+  },
+  fallbackPanel: {
+    padding: tokens.spacing.lg,
+    gap: tokens.spacing.sm,
+  },
+  fallbackLabel: {
+    fontFamily: tokens.fontFamily.sans,
+    fontSize: tokens.fontSize.xs,
+    fontWeight: tokens.fontWeight.semibold,
+    color: tokens.color.textSoft,
+    letterSpacing: tokens.letterSpacing.widest,
+    textTransform: 'uppercase',
+  },
+  fallbackRow: {
+    flexDirection: 'row',
+    gap: tokens.spacing.sm,
+  },
+  fallbackInput: {
+    flex: 1,
+    borderRadius: tokens.radius.lg,
+    borderWidth: 1,
+    borderColor: tokens.color.panelBorder,
+    backgroundColor: tokens.color.inputBg,
+    color: tokens.color.text,
+    paddingHorizontal: tokens.spacing.md,
+    paddingVertical: tokens.spacing.sm,
+    fontFamily: tokens.fontFamily.mono,
+    fontSize: tokens.fontSize.base,
   },
 });
