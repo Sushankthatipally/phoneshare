@@ -4,6 +4,7 @@ import { Badge, Button } from '@dropbeam/shared-ui';
 import { formatBytes, resolveBackendOrigin } from '@dropbeam/protocol';
 
 import { Modal } from '../components/Modal.js';
+import { IdentityPanel } from '../components/IdentityPanel.js';
 import type { DesktopBackendState } from '../features/dashboard/useDesktopBackend.js';
 
 const BACKEND_ORIGIN = resolveBackendOrigin(import.meta.env.VITE_DROPBEAM_API);
@@ -18,11 +19,16 @@ export function Receive({ backend }: { backend: DesktopBackendState }) {
 
   if (!backend.activeSession && !incomingBatches.length) {
     return (
-      <section className="card">
-        <p className="card__eyebrow">No active session</p>
-        <h2 className="card__title">Start a session to receive files</h2>
-        <p className="card__copy">Open Home and create a new session so your phone can connect.</p>
-      </section>
+      <>
+        <IdentityPanel backend={backend} />
+        <section className="card">
+          <p className="card__eyebrow">No active session</p>
+          <h2 className="card__title">Waiting for nearby devices</h2>
+          <p className="card__copy">
+            Your friendly name and hashtag are advertised on the local network. Phones tap your card on the Send tab to pair.
+          </p>
+        </section>
+      </>
     );
   }
 
@@ -31,6 +37,7 @@ export function Receive({ backend }: { backend: DesktopBackendState }) {
 
   return (
     <>
+      <IdentityPanel backend={backend} />
       {incomingBatches.length ? (
         <section className="card">
           <p className="card__eyebrow">Incoming requests</p>

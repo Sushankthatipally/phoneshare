@@ -302,6 +302,8 @@ export interface HistoryEntry {
   files: StoredFileRecord[];
 }
 
+export type QuickSaveMode = 'off' | 'favorites' | 'on';
+
 export interface BackendSettings {
   deviceName: string;
   deviceIcon: DeviceIcon;
@@ -313,6 +315,11 @@ export interface BackendSettings {
   onboardingComplete: boolean;
   clipboardSyncEnabled: boolean;
   watchFolders: WatchFolderConfig[];
+  deviceFingerprint: string;
+  friendlyName: string;
+  hashtag: string;
+  quickSave: QuickSaveMode;
+  favorites: string[];
   createdAt: string;
   updatedAt: string;
 }
@@ -507,6 +514,8 @@ export interface UpdateSettingsRequest {
   onboardingComplete?: boolean;
   clipboardSyncEnabled?: boolean;
   watchFolders?: WatchFolderConfig[];
+  friendlyName?: string;
+  quickSave?: QuickSaveMode;
 }
 
 export interface PeerStorageUpdateRequest {

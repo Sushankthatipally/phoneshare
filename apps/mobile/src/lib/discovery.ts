@@ -122,6 +122,65 @@ export interface DiscoveryState {
   error?: string;
 }
 
+const USB_PROBE_INTERVAL_MS = 5_000;
+const USB_PROBE_HOST = 'localhost';
+const USB_PROBE_PORT = 17619;
+
+interface UsbDiscoveryPayload {
+  fingerprint?: string;
+  name?: string;
+  hashtag?: string;
+  platform?: string;
+  publicKey?: string;
+  sessionId?: string;
+}
+
+// Probe the ADB-tunneled backend on localhost:17619. When it answers, fetch
+// /api/discovery to pull the desktop's TXT-equivalent payload (fingerprint,
+// session, etc.) so the synthetic USB peer is tap-to-pair-ready.
+async function probeUsbPeer(): Promise<DiscoveredPeer | null> {
+  try {
+    const health = await fetch(`http://${USB_PROBE_HOST}:${USB_PROBE_PORT}/api/health`, { method: 'GET' });
+    if (!health.ok) return null;
+    let payload: UsbDiscoveryPayload = {};
+    try {
+      const res = await fetch(`http://${USB_PROBE_HOST}:${USB_PROBE_PORT}/api/discovery`);
+      const json = (await res.json()) as { items?: Array<Record<string, unknown>> };
+      const self = json.items?.find((item) => item.source === 'self');
+      if (self) {
+        payload = {
+          fingerprint: String(self.fingerprint ?? '') || undefined,
+          name: String(self.friendlyName ?? self.name ?? '') || undefined,
+          hashtag: String(self.hashtag ?? '') || undefined,
+          platform: String(self.platform ?? '') || undefined,
+        };
+      }
+    } catch {
+      /* discovery payload is optional — health is enough to inject the peer */
+    }
+    return {
+      id: `usb:${USB_PROBE_HOST}:${USB_PROBE_PORT}`,
+      name: payload.name ?? 'USB Desktop',
+      host: USB_PROBE_HOST,
+      port: USB_PROBE_PORT,
+      fingerprint: payload.fingerprint,
+      icon: 'desktop',
+      txt: {
+        n: payload.name ?? 'USB Desktop',
+        tag: payload.hashtag ?? '',
+        p: payload.platform ?? 'usb',
+        fp: payload.fingerprint ?? '',
+        transport: 'usb',
+        ...(payload.publicKey ? { pk: payload.publicKey } : {}),
+        ...(payload.sessionId ? { sid: payload.sessionId } : {}),
+      },
+      lastSeenAt: Date.now(),
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function useDiscovery(options: UseDiscoveryOptions = {}): DiscoveryState {
   const { publishSelf, selfName, selfPort, selfTxt } = options;
   const [state, setState] = useState<DiscoveryState>({
@@ -130,6 +189,39 @@ export function useDiscovery(options: UseDiscoveryOptions = {}): DiscoveryState 
     peers: [],
   });
   const peersRef = useRef<Map<string, DiscoveredPeer>>(new Map());
+
+  // USB tunnel probe. Runs alongside mDNS so the user gets a USB-pinned peer
+  // even when mDNS is blocked (iPhone hotspot, multicast-unfriendly routers).
+  useEffect(() => {
+    let cancelled = false;
+    const tick = async () => {
+      const peer = await probeUsbPeer();
+      if (cancelled) return;
+      if (peer) {
+        const existing = peersRef.current.get(peer.id);
+        peersRef.current.set(peer.id, { ...peer, lastSeenAt: Date.now() });
+        if (!existing || existing.fingerprint !== peer.fingerprint) {
+          setState((current) => ({
+            ...current,
+            peers: Array.from(peersRef.current.values()).sort((a, b) => b.lastSeenAt - a.lastSeenAt),
+          }));
+        }
+      } else {
+        if (peersRef.current.delete(`usb:${USB_PROBE_HOST}:${USB_PROBE_PORT}`)) {
+          setState((current) => ({
+            ...current,
+            peers: Array.from(peersRef.current.values()).sort((a, b) => b.lastSeenAt - a.lastSeenAt),
+          }));
+        }
+      }
+    };
+    tick();
+    const id = setInterval(tick, USB_PROBE_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, []);
 
   useEffect(() => {
     const zc = loadZeroconf();

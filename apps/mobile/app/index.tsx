@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 
-import { ConnectScreen } from '../src/screens/ConnectScreen.js';
+import { SendScreenView } from '../src/screens/SendScreen.js';
 import { OnboardingScreen } from '../src/screens/OnboardingScreen.js';
 import { PermissionScreen } from '../src/screens/PermissionScreen.js';
 import { ScrollView, Text, View } from '../src/lib/native.js';
@@ -43,5 +43,5 @@ export default function Index() {
       />
     );
   }
-  return <ConnectScreen />;
+  return <SendScreenView />;
 }
