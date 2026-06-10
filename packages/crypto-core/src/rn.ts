@@ -5,10 +5,18 @@
 // here with pure-JS X25519 from @noble/curves; everything else falls through
 // to the shared implementation in ./index.
 
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const qc = require('react-native-quick-crypto');
-if (qc?.install) {
-  qc.install();
+// On react-native-web there is no native QuickCrypto module and requiring it
+// throws — but the browser already ships a complete WebCrypto, so we simply
+// skip the polyfill there and let everything fall through to globalThis.crypto.
+let qc: { install?: () => void; randomBytes?: (n: number) => Buffer } | null = null;
+try {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  qc = require('react-native-quick-crypto');
+  if (qc?.install) {
+    qc.install();
+  }
+} catch {
+  qc = null;
 }
 
 // Ensure crypto.getRandomValues is present even if quick-crypto's install()
