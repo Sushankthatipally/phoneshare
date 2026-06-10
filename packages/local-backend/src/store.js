@@ -1157,6 +1157,7 @@ export class LocalBackendStore {
     };
     share.files.push(record);
     await this.persist();
+    this.broadcast('guest-file-added', { token, file: { ...record, storagePath: undefined } });
     return record;
   }
 
@@ -1244,8 +1245,14 @@ export class LocalBackendStore {
       sourceDeviceFingerprint,
     });
 
+    // Resume only within the same session: encrypted chunks bind the session id
+    // and key into the AEAD, so an upload resumed across sessions can never
+    // decrypt — it just shadows the new upload and poisons the transfer.
     const existing = [...this.uploads.values()].find(
-      (upload) => upload.status === 'pending' && upload.fingerprint === fingerprint,
+      (upload) =>
+        upload.status === 'pending' &&
+        upload.sessionId === sessionId &&
+        upload.fingerprint === fingerprint,
     );
     if (existing) {
       // Resume: just return the existing upload pointer so the client picks up at nextChunk.

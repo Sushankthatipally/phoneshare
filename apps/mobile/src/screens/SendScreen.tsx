@@ -11,7 +11,8 @@ import { useConnection } from '../lib/connection.js';
 import { useDiscovery, type DiscoveredPeer } from '../lib/discovery.js';
 import { useMobileIdentity } from '../lib/identity.js';
 import { pickFolderFiles } from '../lib/folder-send.js';
-import { requestTransferBatch } from '../lib/api.js';
+import { requestTransferBatch, uploadSessionFile, waitForTransferDecision } from '../lib/api.js';
+import { resolveChunkSize } from '../services/transfer.js';
 
 type SelectionKind = 'file' | 'folder' | 'text' | 'paste';
 
@@ -37,7 +38,7 @@ function formatBytes(bytes: number): string {
 }
 
 export function SendScreenView() {
-  const { deviceFingerprint, deviceName, startDirectHandshake } = useConnection();
+  const { connection, deviceFingerprint, deviceName, startDirectHandshake } = useConnection();
   const identity = useMobileIdentity(deviceFingerprint);
   const { peers, available } = useDiscovery({});
   const [selection, setSelection] = useState<SelectionItem[]>([]);
@@ -219,6 +220,17 @@ export function SendScreenView() {
             expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
           },
         });
+
+        // After pairing, connection holds the derived session key.
+        // We read it via the module-level `connection` ref after the handshake
+        // completes. The hook captures `connection` from closure; for safety we
+        // re-read it from the same state at call time.
+        const sessionKey = connection?.sharedSecret;
+        if (!sessionKey) {
+          setEmptyHint('Session key not available — try again');
+          return;
+        }
+
         const batchResult = await requestTransferBatch({
           origin,
           sessionId: sid,
@@ -234,14 +246,86 @@ export function SendScreenView() {
           setEmptyHint(`Batch request failed (${batchResult.status})`);
           return;
         }
-        setEmptyHint(`Requested ${selection.length} item${selection.length === 1 ? '' : 's'} → ${peerName}`);
+
+        const batch = (batchResult.body as { id?: string } | null)?.id
+          ? (batchResult.body as { id: string })
+          : null;
+        if (!batch?.id) {
+          setEmptyHint('Batch request did not return a batch id');
+          return;
+        }
+
+        setEmptyHint(`Waiting for ${peerName} to accept…`);
+
+        // Wait for transfer-accepted / transfer-declined over the global SSE
+        // stream. We use SSE rather than polling because the backend broadcasts
+        // transfer-accepted/declined immediately on desktop action and SSE gives
+        // sub-100 ms latency with no extra round-trips.
+        const decision = await waitForTransferDecision({ origin, batchId: batch.id });
+
+        if (!decision.accepted) {
+          setEmptyHint(`Declined by ${peerName}`);
+          return;
+        }
+
+        // Build a map of name→item for matching accepted file ids.
+        // The batch.files entries carry ids assigned by the backend; we match
+        // them back to local selection items by name.
+        const batchFiles = (batchResult.body as { files?: Array<{ id: string; name: string }> }).files ?? [];
+        const acceptedFileIdSet = new Set(decision.fileIds);
+        const chunkSize = resolveChunkSize('wifi');
+        const myDeviceName = identity.friendlyName || deviceName;
+
+        let uploadIndex = 0;
+        let uploadTotal = 0;
+
+        // Count how many items were accepted.
+        for (const bf of batchFiles) {
+          if (acceptedFileIdSet.has(bf.id)) uploadTotal++;
+        }
+        if (uploadTotal === 0) {
+          // All accepted (no per-file subset filter from desktop).
+          uploadTotal = selection.length;
+        }
+
+        for (const selectionItem of selection) {
+          // Find the matching batch file entry to check if it was accepted.
+          const batchFile = batchFiles.find((bf) => bf.name === selectionItem.name);
+          if (batchFiles.length > 0 && batchFile && !acceptedFileIdSet.has(batchFile.id)) {
+            // Desktop only accepted a subset and this file was not in it — skip.
+            continue;
+          }
+
+          uploadIndex++;
+          setEmptyHint(`Sending ${uploadIndex}/${uploadTotal} — 0%`);
+
+          const result = await uploadSessionFile({
+            origin,
+            sessionId: sid,
+            sharedSecretB64url: sessionKey,
+            deviceName: myDeviceName,
+            item: selectionItem,
+            chunkSize,
+            onProgress: (pct) => {
+              setEmptyHint(`Sending ${uploadIndex}/${uploadTotal} — ${pct}%`);
+            },
+          });
+
+          if (!result.ok) {
+            const msg = (result.body as { error?: string } | null)?.error ?? `HTTP ${result.status}`;
+            setEmptyHint(`Upload failed: ${msg}`);
+            return;
+          }
+        }
+
+        setEmptyHint(`Sent ${uploadTotal} item${uploadTotal === 1 ? '' : 's'} to ${peerName}`);
       } catch (err) {
         setEmptyHint(err instanceof Error ? err.message : 'Send failed');
       } finally {
         setSendingTo(null);
       }
     },
-    [deviceName, identity.friendlyName, selection, startDirectHandshake],
+    [connection, deviceName, identity.friendlyName, selection, startDirectHandshake],
   );
 
   return (

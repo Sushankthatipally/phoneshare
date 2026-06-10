@@ -17,15 +17,37 @@ import {
   type UpdateSettingsRequest,
 } from '@dropbeam/protocol';
 
+// ─── Guest / web-share types (not in protocol package) ──────────────────────
+interface GuestShareRecord {
+  id: string;
+  token: string;
+  createdAt: string;
+  expiresAt: string;
+  maxUses: number;
+  uses: number;
+  files: Array<{ id: string; name: string; size: number; mimeType: string }>;
+  sharerName: string | null;
+}
+
+interface CreateGuestShareResponse {
+  ok: boolean;
+  share: GuestShareRecord;
+  /** LAN-routable URL the phone should open, e.g. http://192.168.x.x:17619/guest/... */
+  lanUrl: string | null;
+  lanOrigin: string | null;
+}
+
 const BACKEND_ORIGIN = resolveBackendOrigin(import.meta.env.VITE_DROPBEAM_API);
 console.info('[dropbeam] backend origin =', BACKEND_ORIGIN);
 const client = new DropbeamBackendClient(BACKEND_ORIGIN);
 
+// Phones talk straight to the backend (there is no separate pairing web app
+// anymore), so the phone-facing origin must point at the backend port.
 function resolvePhoneOrigin(hostnameOverride?: string | null) {
-  if (typeof window === 'undefined') return 'http://localhost:5174';
+  if (typeof window === 'undefined') return 'http://localhost:17619';
   if (import.meta.env.VITE_DROPBEAM_PHONE_ORIGIN) return import.meta.env.VITE_DROPBEAM_PHONE_ORIGIN;
   const hostname = hostnameOverride || window.location.hostname || 'localhost';
-  return `${window.location.protocol}//${hostname}:5174`;
+  return `http://${hostname}:17619`;
 }
 
 export function useDesktopBackend() {
@@ -36,6 +58,7 @@ export function useDesktopBackend() {
   const [devices, setDevices] = useState<DiscoveryDeviceRecord[]>([]);
   const [trustedDevices, setTrustedDevices] = useState<TrustedDeviceRecord[]>([]);
   const [knownDevices, setKnownDevices] = useState<KnownDeviceRecord[]>([]);
+  const [guestShares, setGuestShares] = useState<GuestShareRecord[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
@@ -251,6 +274,65 @@ export function useDesktopBackend() {
     [refresh],
   );
 
+  /**
+   * Create a web-share (guest share) and optionally upload files to it.
+   * Returns the share + the LAN URL that phones should open.
+   */
+  const createGuestShare = useCallback(
+    async (input: { ttlMs?: number; maxUses?: number }, files: File[] = []) => {
+      setBusy('create-guest');
+      setError(null);
+      try {
+        const origin = resolveBackendOrigin(import.meta.env.VITE_DROPBEAM_API);
+        const res = await fetch(`${origin}/api/guest`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(input),
+        });
+        if (!res.ok) throw new Error(`create share failed (HTTP ${res.status})`);
+        const json = (await res.json()) as CreateGuestShareResponse;
+        const share = json.share;
+
+        // Upload each file via streaming PUT
+        for (const file of files) {
+          const meta = JSON.stringify({ name: file.name, mimeType: file.type || 'application/octet-stream' });
+          const uploadRes = await fetch(
+            `${origin}/api/guest/${encodeURIComponent(share.token)}/files`,
+            {
+              method: 'PUT',
+              headers: { 'X-File-Meta': encodeURIComponent(meta), 'Content-Type': 'application/octet-stream' },
+              body: file,
+              // @ts-expect-error — duplex is required for streaming bodies in some environments
+              duplex: 'half',
+            },
+          );
+          if (!uploadRes.ok) throw new Error(`upload failed for ${file.name} (HTTP ${uploadRes.status})`);
+        }
+
+        setGuestShares((prev) => [share, ...prev]);
+        return { share, lanUrl: json.lanUrl };
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Failed to create web share');
+        return null;
+      } finally {
+        setBusy(null);
+      }
+    },
+    [],
+  );
+
+  /**
+   * Build the URL for a web-share page using the LAN host.
+   * Uses the backend's loopback origin as fallback when no LAN host is known.
+   */
+  const guestUrl = useCallback(
+    (token: string) => {
+      const origin = resolveBackendOrigin(import.meta.env.VITE_DROPBEAM_API);
+      return `${origin}/guest/${encodeURIComponent(token)}`;
+    },
+    [],
+  );
+
   return {
     activeSession,
     activeUploads,
@@ -259,6 +341,7 @@ export function useDesktopBackend() {
     dashboard,
     devices,
     error,
+    guestShares,
     health,
     history,
     knownDevices,
@@ -269,9 +352,11 @@ export function useDesktopBackend() {
     trustedDevices,
     acceptIncoming,
     closeSession,
+    createGuestShare,
     declineIncoming,
     downloadFile: client.downloadFile.bind(client),
     downloadUrl: client.downloadUrl.bind(client),
+    guestUrl,
     benchmarkSend: client.benchmarkSend.bind(client),
     benchmarkReceive: client.benchmarkReceive.bind(client),
     reconnectKnownDevice,

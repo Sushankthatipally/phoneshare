@@ -153,14 +153,14 @@ test('reconnect known device: skips PIN — pin-verify rejects, ECDH connect alo
   t.after(cleanup);
 
   // 1. Bootstrap: pair a phone normally so it lands in knownDevices.
+  // requestConnect already auto-pairs (returns paired session directly).
   const initial = await store.createSession({ mode: 'wifi' });
   const remotePublicKey = await generatePeerPublicKey();
-  await store.requestConnect(initial.id, {
+  const paired = await store.requestConnect(initial.id, {
     deviceName: 'Pixel 8 Pro',
     platform: 'android',
     remotePublicKey,
   });
-  const paired = await store.acceptSession(initial.id);
   const fingerprint = paired.peerDevice.fingerprint;
   assert.ok(fingerprint, 'paired session must record peer fingerprint');
   assert.ok(store.listKnownDevices().some((d) => d.fingerprint === fingerprint));
@@ -200,12 +200,32 @@ test('reconnect: unknown fingerprint returns 404', async (t) => {
   );
 });
 
-test('standard non-known sessions still require PIN (no regression)', async (t) => {
+test('standard non-known sessions: requestConnect auto-pairs, verifyPin rejects with 409', async (t) => {
   const { store, cleanup } = await makeStore();
   t.after(cleanup);
+
+  // New contract: there is no PIN flow. A fresh wifi session + requestConnect
+  // with a publicKey pairs immediately (state 'paired', pairing.encrypted true).
   const session = await store.createSession({ mode: 'wifi' });
+  const remotePublicKey = await generatePeerPublicKey();
+  const result = await store.requestConnect(session.id, {
+    deviceName: 'TestPhone',
+    platform: 'android',
+    remotePublicKey,
+  });
+  assert.equal(result.state, 'paired', 'session must be paired immediately after requestConnect');
+  assert.equal(result.pairing.encrypted, true, 'AEAD encryption must be active after auto-pair');
+
+  // verifyPin must reject because no PIN flow exists in the new contract.
   await assert.rejects(
     store.verifyPin(session.id, '123456'),
-    (err) => err.status === 409 && /no PIN configured/i.test(err.message),
+    (err) => {
+      assert.equal(err.status, 409);
+      assert.ok(
+        /not awaiting PIN verification/i.test(err.message),
+        `expected "not awaiting PIN verification", got: ${err.message}`,
+      );
+      return true;
+    },
   );
 });

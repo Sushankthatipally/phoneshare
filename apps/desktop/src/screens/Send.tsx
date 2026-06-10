@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 
 import JSZip from 'jszip';
 
-import { Badge, Button } from '@dropbeam/shared-ui';
+import { Badge, Button, QrCode } from '@dropbeam/shared-ui';
 import { formatBytes, resolveBackendOrigin } from '@dropbeam/protocol';
 
 import { Modal } from '../components/Modal.js';
@@ -46,6 +46,45 @@ export function Send({
   const [largeFilePrompt, setLargeFilePrompt] = useState(false);
   const [sendToSelf, setSendToSelf] = useState(false);
   const [peerStorage, setPeerStorage] = useState<PeerStorageState>({ status: 'idle' });
+  const [webShareBusy, setWebShareBusy] = useState(false);
+  const [webShareLink, setWebShareLink] = useState<string | null>(null);
+  const [webShareToken, setWebShareToken] = useState<string | null>(null);
+  const [webShareFiles, setWebShareFiles] = useState<
+    Array<{ id: string; name: string; size: number; mimeType: string }>
+  >([]);
+  // Names of the files this desktop published into the share, captured at
+  // creation time so phone uploads can be told apart in the polled file list.
+  const webShareSentNamesRef = useRef<Set<string>>(new Set());
+  const webShareReceived = useMemo(
+    () => webShareFiles.filter((file) => !webShareSentNamesRef.current.has(file.name)),
+    [webShareFiles],
+  );
+
+  // While a browser share link is displayed, poll its state so files the phone
+  // uploads through the page show up here without a manual refresh.
+  useEffect(() => {
+    if (!webShareToken) return;
+    const origin = resolveBackendOrigin(import.meta.env.VITE_DROPBEAM_API);
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const res = await fetch(`${origin}/api/guest/${encodeURIComponent(webShareToken)}/state`);
+        if (!res.ok) return;
+        const json = (await res.json()) as {
+          share?: { files?: Array<{ id: string; name: string; size: number; mimeType: string }> };
+        };
+        if (!cancelled) setWebShareFiles(json.share?.files ?? []);
+      } catch {
+        // Backend unreachable; keep the last known list.
+      }
+    };
+    void poll();
+    const timer = window.setInterval(poll, 3000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [webShareToken]);
 
   useEffect(() => {
     if (folderInputRef.current) {
@@ -148,6 +187,102 @@ export function Send({
           </p>
         </section>
       ) : null}
+
+      {/* ─── Share via browser (no-app path for iPhone / any phone) ─── */}
+      <section className="card">
+        <p className="card__eyebrow">No app on the phone?</p>
+        <h2 className="card__title">Share via browser</h2>
+        <p className="card__copy">
+          Create a one-time link. The phone opens it in Safari or Chrome — no app required.
+          Select files above, then click the button below to publish the share.
+        </p>
+        <div className="topbar__actions">
+          <Button
+            disabled={!queuedFiles.length || webShareBusy}
+            onClick={async () => {
+              setWebShareBusy(true);
+              setWebShareLink(null);
+              setWebShareToken(null);
+              setWebShareFiles([]);
+              try {
+                // Each page load on the phone consumes one use; refreshes and
+                // Safari prefetches count too, so leave generous headroom.
+                const result = await backend.createGuestShare(
+                  { ttlMs: 60 * 60 * 1000, maxUses: 10 },
+                  queuedFiles,
+                );
+                if (result) {
+                  // Prefer the LAN URL returned by the backend (reachable from the phone).
+                  // Fall back to guestUrl() which uses the backend loopback origin.
+                  const url = result.lanUrl ?? backend.guestUrl(result.share.token);
+                  webShareSentNamesRef.current = new Set(queuedFiles.map((file) => file.name));
+                  setWebShareLink(url);
+                  setWebShareToken(result.share.token);
+                }
+              } finally {
+                setWebShareBusy(false);
+              }
+            }}
+            variant="primary"
+          >
+            {webShareBusy ? 'Creating link…' : 'Create browser share link'}
+          </Button>
+          {webShareLink ? (
+            <Button
+              onClick={() => {
+                setWebShareLink(null);
+                setWebShareToken(null);
+                setWebShareFiles([]);
+              }}
+              variant="ghost"
+            >
+              Clear
+            </Button>
+          ) : null}
+        </div>
+
+        {webShareLink ? (
+          <div className="qr-block" style={{ marginTop: 16 }}>
+            <QrCode size={160} value={webShareLink} />
+            <div className="qr-block__copy">
+              <Badge tone="green">Scan to open in Safari</Badge>
+              <p className="qr-block__hint" style={{ wordBreak: 'break-all', fontSize: '0.82rem' }}>
+                {webShareLink}
+              </p>
+              <div className="topbar__actions">
+                <Button
+                  onClick={() => void navigator.clipboard?.writeText?.(webShareLink)}
+                  variant="secondary"
+                >
+                  Copy link
+                </Button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {webShareToken && webShareReceived.length ? (
+          <div className="list" style={{ marginTop: 16 }}>
+            <p className="card__eyebrow">Received from the phone</p>
+            {webShareReceived.map((file) => (
+              <div className="row" key={file.id}>
+                <div className="row__copy">
+                  <strong>{file.name}</strong>
+                  <span>
+                    {formatBytes(file.size)} · {file.mimeType}
+                  </span>
+                </div>
+                <a
+                  className="link"
+                  href={`${resolveBackendOrigin(import.meta.env.VITE_DROPBEAM_API)}/api/guest/${encodeURIComponent(webShareToken)}/files/download?fileId=${encodeURIComponent(file.id)}`}
+                >
+                  Save
+                </a>
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </section>
 
       <section className="card">
         <p className="card__eyebrow">Step 1 · Files</p>

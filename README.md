@@ -5,6 +5,11 @@ and native mobile (Expo / React Native). No accounts, no cloud, no QR pairing
 or PIN — devices on the same Wi-Fi see each other via mDNS, you tap a device
 to send. Encryption is invisible: ECDH + AES-GCM under the hood, no UI for it.
 
+Phones without the app (including **iPhone**) use **Web Share**: the desktop
+Send tab creates a browser link + QR; the phone opens it in Safari/Chrome to
+download from and upload to the PC. Works on the same Wi-Fi and on the
+iPhone's Personal Hotspot. See `docs/IOS_SHARING.md`.
+
 ## Product shape
 
 - **Desktop**: left rail with Receive · Send · Settings. Default tab is
@@ -15,7 +20,9 @@ to send. Encryption is invisible: ECDH + AES-GCM under the hood, no UI for it.
 - **Mobile (Android)**: bottom tab bar with Receive · Send · Settings.
   Identical aesthetic (dark glass), same four selection types, same Quick
   Save tri-state.
-- **iOS**: parked. Sideload requires a Mac.
+- **iOS**: no native app yet (building one requires a Mac). iPhones share via
+  the Web Share browser page — see `docs/IOS_SHARING.md`. USB cable transfer
+  for iPhone is not possible without the native app.
 
 ## Discovery lanes
 

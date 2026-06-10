@@ -318,7 +318,10 @@ export function ConnectionProvider({ children }: PropsWithChildren) {
 
       (async () => {
         try {
-          const response = await fetch(`${origin}/api/sessions/${encodeURIComponent(sessionId)}/events`, {
+          // The backend exposes a single global event stream at /api/events —
+          // there is no per-session stream. Listeners filter on sessionId in
+          // the event payloads themselves.
+          const response = await fetch(`${origin}/api/events`, {
             method: 'GET',
             headers: { Accept: 'text/event-stream' },
             signal: controller.signal,
