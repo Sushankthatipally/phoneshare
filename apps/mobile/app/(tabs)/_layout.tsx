@@ -1,9 +1,10 @@
 import { Tabs } from 'expo-router';
-import { Text } from 'react-native';
 import { tokens } from '@dropbeam/shared-ui-rn';
 
-function TabIcon({ glyph, color }: { glyph: string; color: string }) {
-  return <Text style={{ color, fontSize: tokens.fontSize.bodyLg }}>{glyph}</Text>;
+import { Icon, type IconName } from '../../src/components/Icon.js';
+
+function TabIcon({ name, color }: { name: IconName; color: string }) {
+  return <Icon name={name} color={color} size={20} />;
 }
 
 export default function TabsLayout() {
@@ -32,21 +33,21 @@ export default function TabsLayout() {
         name="receive"
         options={{
           title: 'Receive',
-          tabBarIcon: ({ color }) => <TabIcon glyph="↓" color={color} />,
+          tabBarIcon: ({ color }) => <TabIcon name="download" color={color} />,
         }}
       />
       <Tabs.Screen
         name="index"
         options={{
           title: 'Send',
-          tabBarIcon: ({ color }) => <TabIcon glyph="↑" color={color} />,
+          tabBarIcon: ({ color }) => <TabIcon name="send-horizontal" color={color} />,
         }}
       />
       <Tabs.Screen
         name="settings"
         options={{
           title: 'Settings',
-          tabBarIcon: ({ color }) => <TabIcon glyph="⚙" color={color} />,
+          tabBarIcon: ({ color }) => <TabIcon name="settings" color={color} />,
         }}
       />
     </Tabs>

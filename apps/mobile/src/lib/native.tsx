@@ -20,6 +20,7 @@ import {
   type ViewStyle,
   type TextStyle,
 } from 'react-native';
+import { tokens } from '@dropbeam/shared-ui-rn';
 
 type AnyStyle = StyleProp<ViewStyle> | StyleProp<TextStyle> | Record<string, unknown>;
 
@@ -104,18 +105,19 @@ export function TextInput({
     <RNTextInput
       onChangeText={onChangeText}
       placeholder={placeholder}
-      placeholderTextColor={placeholderTextColor ?? '#5b7894'}
+      placeholderTextColor={placeholderTextColor ?? tokens.color.textDim}
       multiline={multiline}
       numberOfLines={numberOfLines}
       style={[
         {
-          backgroundColor: '#0a1320',
-          borderColor: '#274860',
+          backgroundColor: tokens.color.inputBg,
+          borderColor: tokens.color.panelBorder,
           borderWidth: 1,
-          borderRadius: 14,
-          color: '#edf5ff',
-          fontSize: 16,
-          padding: 14,
+          borderRadius: tokens.radius.md,
+          color: tokens.color.text,
+          fontFamily: tokens.fontFamily.sans,
+          fontSize: tokens.fontSize.base,
+          padding: tokens.spacing.md,
         },
         style as StyleProp<TextStyle>,
       ]}
@@ -132,28 +134,29 @@ export function Button({
 }: PropsWithChildren<{ style?: AnyStyle; onPress?: () => void; onClick?: () => void; disabled?: boolean }>) {
   return (
     <TouchableOpacity
-      activeOpacity={0.78}
+      activeOpacity={0.82}
       disabled={disabled}
       onPress={onPress}
       style={[
         {
-          backgroundColor: disabled ? '#223448' : '#3aa9ff',
-          borderRadius: 16,
-          paddingVertical: 14,
-          paddingHorizontal: 16,
+          backgroundColor: tokens.color.text,
+          borderRadius: tokens.radius.xl,
+          paddingVertical: tokens.spacing.md,
+          paddingHorizontal: tokens.spacing.lg,
           alignItems: 'center',
           justifyContent: 'center',
+          opacity: disabled ? tokens.opacity.disabled : 1,
         },
         style as StyleProp<ViewStyle>,
       ]}
     >
       <RNText
         style={{
-          color: disabled ? '#7b8da4' : '#03101b',
-          fontSize: 14,
-          fontWeight: '700',
-          letterSpacing: 0.4,
-          textTransform: 'uppercase',
+          color: tokens.color.textInverse,
+          fontFamily: tokens.fontFamily.sans,
+          fontSize: tokens.fontSize.sm,
+          fontWeight: tokens.fontWeight.semibold,
+          letterSpacing: tokens.letterSpacing.wide,
         }}
       >
         {children as ReactNode}
@@ -162,6 +165,6 @@ export function Button({
   );
 }
 
-export function Spacer({ size = 16 }: { size?: number }) {
+export function Spacer({ size = tokens.spacing.lg }: { size?: number }) {
   return <RNView style={{ height: size }} />;
 }

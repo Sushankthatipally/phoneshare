@@ -332,10 +332,10 @@ export function SendScreenView() {
     <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
       <SectionHeading eyebrow="Selection" title="What do you want to send?" />
       <View style={styles.selectionRow}>
-        <SelectionCard icon="📄" label="File" onPress={onPickFile} disabled={busy} />
-        <SelectionCard icon="📁" label="Folder" onPress={onPickFolder} disabled={busy} />
-        <SelectionCard icon="✏️" label="Text" onPress={() => setShowTextModal(true)} />
-        <SelectionCard icon="📋" label="Paste" onPress={onPasteText} />
+        <SelectionCard icon="file-text" label="File" onPress={onPickFile} disabled={busy} />
+        <SelectionCard icon="folder" label="Folder" onPress={onPickFolder} disabled={busy} />
+        <SelectionCard icon="type" label="Text" onPress={() => setShowTextModal(true)} />
+        <SelectionCard icon="clipboard" label="Paste" onPress={onPasteText} />
       </View>
 
       {selection.length ? (

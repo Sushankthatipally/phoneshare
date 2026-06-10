@@ -1,8 +1,36 @@
 # DropBeam — Mobile UI Parity Handoff
 
 **Date:** 2026-06-10
-**Goal:** make the Android/iOS (Expo) app look like the desktop app — same dark-glass design system, same patterns. The mobile app currently renders with serif fonts, bright blue buttons, navy panels, and emoji icons; the desktop is the source of truth.
-**Status:** investigation + groundwork DONE, restyle work NOT started. Everything needed to execute is in this file.
+**Goal:** make the Android/iOS (Expo) app look like the desktop app — same dark-glass design system, same patterns. The mobile app rendered with serif fonts, bright blue buttons, navy panels, and emoji icons; the desktop is the source of truth.
+**Status:** ✅ **COMPLETED 2026-06-10.** All 9 work items in §6 done. See "Completion log" below.
+
+---
+
+## Completion log (2026-06-10)
+
+All §6 work items executed and verified.
+
+| # | Item | What was done |
+|---|---|---|
+| 6.1 | `lib/native.tsx` blue-navy primitives | Button → white bg / black text / radius xl / semibold (was `#3aa9ff`). TextInput → `inputBg` / `panelBorder` / text token, placeholder `textDim` (was navy `#0a1320`). All token-driven. API unchanged. |
+| 6.2 | `PermissionScreen.tsx` | Rebuilt on GlassPanel + tokens; eyebrow/title/copy pattern; status badges use pastel tokens (`green`/`danger`/`textDim`); link is `text`+underline (was blue `#3a8bff`). **Web gate:** `app/(tabs)/index.tsx` now skips the permission step on `Platform.OS === 'web'`. |
+| 6.3 | `OnboardingScreen.tsx` | Raw grays → tokens; GlassPanel cards; eyebrow/title/copy. |
+| 6.4 | `LiveBadge.tsx` | **Deleted** — dead code (no importers); removed its navy hex palette. |
+| 6.5 | `ScreenCard.tsx` | **Deleted** — dead code (no importers); removed its navy slate palette. |
+| 6.6 | `shared-ui-rn/src/lib/tokens.ts` duplicate | **Deleted** — dead drifted duplicate (no importers). Canonical `src/tokens.ts` (platform font fix) is the only token source. |
+| 6.7 | Tab icons | `app/(tabs)/_layout.tsx` text glyphs (↓↑⚙) → lucide line icons via new `src/components/Icon.tsx` (react-native-svg, exact lucide path data): Download / SendHorizontal / Settings. |
+| 6.8 | SelectionCard emoji | `SelectionCard` now takes an `IconName`; SendScreen passes `file-text`/`folder`/`type`/`clipboard` lucide icons (was 📄📁✏️📋). |
+| 6.9 | Eyebrow audit + DeviceCard | DeviceCard platform emoji → lucide Monitor/Smartphone/Tablet; heart glyph (♥/♡) → lucide `heart` (filled when favorite). Receive/Settings headings already eyebrow-style; left as-is. |
+
+**New file:** `apps/mobile/src/components/Icon.tsx` — reusable lucide-style SVG icon set (11 glyphs) shared by tabs, SelectionCard, DeviceCard.
+
+**Verification:**
+- `pnpm typecheck` — 7/7 clean.
+- Grep gate (raw hex in `apps/mobile/src` + `packages/shared-ui-rn/src`): only `identity.ts` `'#0000'` (a hashtag ID string, allowed). No rgb/rgba literals.
+- Backend regression: `pnpm --filter @dropbeam/local-backend test` 37/37; transfer smoke ALL PASS.
+- Web preview screenshots: `docs/screenshots/mobile-{send,receive,settings}-after.png` — sans-serif fonts (was serif), lucide tab icons, white inverted buttons, uppercase token eyebrows. Compare against `-before.png` and `desktop-*.png`.
+
+**Still requires a real device pass:** web preview proves token/structure parity; build the APK (see "Android build" at the bottom of this file) and screenshot on-device to confirm the `Platform.select` font mapping renders identically.
 
 ---
 
@@ -163,3 +191,63 @@ Commit format: `feat(parity): <what> — parity verified vs <desktop screen>`
 - `store.js` contains literal NUL bytes in `createUploadFingerprint` hash separators — intentional, do not "fix".
 - Quick Save / favorites / trusted flows untouched by this work.
 - Android device verification (real APK) still needed after web-preview parity — web preview and device should match since both consume the same tokens; if they diverge, suspect the `Platform.select` font mapping.
+
+---
+
+## 9. Android build & install (replace the old app on the phone)
+
+The phone app's package id is `com.dropbeam.mobile` and its manifest declares the
+`SEND` / `SEND_MULTIPLE` share-sheet intent filters — that's why "DropBeam"
+appears when you tap Share. Building a new APK with the **same package id** and
+**same debug keystore** replaces the installed app in place (keeps the share-sheet
+entry, just updated code).
+
+The committed `apps/mobile/android/` project already has the share-sheet filters,
+custom native modules, and a release build type signed with the bundled
+`debug.keystore` — so **no `expo prebuild` and no keystore setup are needed**, and
+`assembleRelease` produces a standalone, installable APK with the latest JS
+embedded.
+
+### Option A — Local build (recommended; you already built here before)
+Prereqs: **JDK 17** (`java -version` must show 17) and the Android SDK
+(`ANDROID_HOME` set). From the repo root:
+
+```powershell
+pnpm install
+cd apps\mobile\android
+.\gradlew.bat assembleRelease
+# APK output:
+#   apps\mobile\android\app\build\outputs\apk\release\app-release.apk
+```
+
+Install over the old app (phone in USB debugging mode, or copy the APK across):
+
+```powershell
+adb install -r apps\mobile\android\app\build\outputs\apk\release\app-release.apk
+```
+
+`-r` reinstalls keeping data; signatures match (both debug keystore) so it replaces
+the existing DropBeam cleanly. If Android refuses with a signature mismatch (only if
+the previously installed build used a different keystore), uninstall first:
+`adb uninstall com.dropbeam.mobile` then `adb install <apk>`.
+
+If gradle picks the wrong JDK, point it at 17 for the build:
+```powershell
+$env:JAVA_HOME = "C:\Program Files\Eclipse Adoptium\jdk-17.0.x-hotspot"  # your JDK 17 path
+cd apps\mobile\android; .\gradlew.bat assembleRelease
+```
+
+### Option B — EAS cloud build (no local Android SDK needed)
+```powershell
+cd apps\mobile
+pnpm exec eas login                 # once
+pnpm exec eas build --platform android --profile preview
+```
+EAS returns a download link; install that APK on the phone (same package id → replaces old).
+
+### After installing
+- Start the desktop app + backend on the same Wi-Fi (or the phone's hotspot).
+- The rebuilt app carries every fix from this session: working file upload path,
+  correct ports (17619), restored Web Share, and the dark-glass UI parity.
+- iOS: still no native build (needs a Mac) — iPhones use the Web Share browser page
+  (`docs/IOS_SHARING.md`).

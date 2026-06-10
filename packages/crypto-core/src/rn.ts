@@ -22,10 +22,12 @@ try {
 // Ensure crypto.getRandomValues is present even if quick-crypto's install()
 // only patches subtle/createHash/etc. Used by `encryptChunk` for AES nonces.
 if (typeof globalThis.crypto !== 'undefined' && typeof globalThis.crypto.getRandomValues !== 'function' && qc?.randomBytes) {
+  // Capture the narrowed fn in a const so it stays defined inside the deferred closure.
+  const qcRandomBytes = qc.randomBytes;
   // @ts-ignore — newer @types/node tightens the signature to accept null; the polyfill below never receives null.
   (globalThis.crypto as Crypto & { getRandomValues: <T extends ArrayBufferView>(view: T) => T }).getRandomValues =
     <T extends ArrayBufferView>(view: T): T => {
-      const bytes: Buffer = qc.randomBytes(view.byteLength);
+      const bytes: Buffer = qcRandomBytes(view.byteLength);
       const dst = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
       dst.set(new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength));
       return view;

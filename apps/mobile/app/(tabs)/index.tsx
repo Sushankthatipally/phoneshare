@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react';
+import { Platform } from 'react-native';
+import { tokens } from '@dropbeam/shared-ui-rn';
 
 import { SendScreenView } from '../../src/screens/SendScreen.js';
 import { OnboardingScreen } from '../../src/screens/OnboardingScreen.js';
@@ -14,16 +16,22 @@ export default function Index() {
 
   // Resolve the initial step only once persisted state has been loaded;
   // before that, render nothing to avoid flashing onboarding for returning users.
+  // On web the camera/notification permissions are meaningless, so skip that
+  // step entirely and land returning-or-new users straight on naming/Send.
   useEffect(() => {
     if (!hydrated) return;
-    setStep(onboarded ? 'done' : 'permissions');
+    if (onboarded) {
+      setStep('done');
+    } else {
+      setStep(Platform.OS === 'web' ? 'name' : 'permissions');
+    }
   }, [hydrated, onboarded]);
 
   if (!hydrated || !step) {
     return (
-      <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 16 }}>
-        <View style={{ padding: 16 }}>
-          <Text style={{ color: '#7a7a7a' }}>Loading…</Text>
+      <ScrollView style={{ flex: 1, backgroundColor: tokens.color.bg }} contentContainerStyle={{ padding: tokens.spacing.lg }}>
+        <View style={{ padding: tokens.spacing.lg }}>
+          <Text style={{ color: tokens.color.textDim, fontFamily: tokens.fontFamily.sans }}>Loading…</Text>
         </View>
       </ScrollView>
     );

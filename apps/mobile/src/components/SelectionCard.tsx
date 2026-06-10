@@ -1,8 +1,10 @@
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { GlassPanel, tokens } from '@dropbeam/shared-ui-rn';
 
+import { Icon, type IconName } from './Icon.js';
+
 interface SelectionCardProps {
-  icon: string;
+  icon: IconName;
   label: string;
   onPress: () => void;
   disabled?: boolean;
@@ -17,7 +19,7 @@ export function SelectionCard({ icon, label, onPress, disabled }: SelectionCardP
     >
       <GlassPanel style={styles.card}>
         <View style={styles.iconWrap}>
-          <Text style={styles.icon}>{icon}</Text>
+          <Icon name={icon} size={22} color={tokens.color.text} />
         </View>
         <Text style={styles.label}>{label}</Text>
       </GlassPanel>
@@ -38,10 +40,6 @@ const styles = StyleSheet.create({
     height: 36,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  icon: {
-    fontSize: tokens.fontSize.xl,
-    color: tokens.color.text,
   },
   label: {
     fontFamily: tokens.fontFamily.sans,

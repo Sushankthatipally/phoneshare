@@ -1,19 +1,22 @@
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { GlassPanel, tokens } from '@dropbeam/shared-ui-rn';
 
+import { Icon, type IconName } from './Icon.js';
 import type { DiscoveredPeer } from '../lib/discovery.js';
 
-const PLATFORM_ICONS: Record<string, string> = {
-  ios: '📱',
-  android: '📱',
-  darwin: '💻',
-  win32: '🖥',
-  windows: '🖥',
-  linux: '🐧',
-  phone: '📱',
-  tablet: '📋',
-  desktop: '🖥',
-  laptop: '💻',
+// Map every platform string to one of the three lucide device glyphs the
+// desktop uses (Monitor / Smartphone / Tablet).
+const PLATFORM_ICONS: Record<string, IconName> = {
+  ios: 'smartphone',
+  android: 'smartphone',
+  phone: 'smartphone',
+  tablet: 'tablet',
+  darwin: 'monitor',
+  win32: 'monitor',
+  windows: 'monitor',
+  linux: 'monitor',
+  desktop: 'monitor',
+  laptop: 'monitor',
 };
 
 interface DeviceCardProps {
@@ -26,7 +29,7 @@ interface DeviceCardProps {
 
 export function DeviceCard({ peer, isFavorite, transport, onPress, onToggleFavorite }: DeviceCardProps) {
   const platform = (peer.txt?.p ?? peer.icon ?? '').toLowerCase();
-  const icon = PLATFORM_ICONS[platform] ?? '🖥';
+  const iconName = PLATFORM_ICONS[platform] ?? 'monitor';
   const friendlyName = peer.txt?.n ?? peer.name;
   const hashtag = peer.txt?.tag ?? '';
   const platformLabel = peer.txt?.p ?? null;
@@ -34,7 +37,7 @@ export function DeviceCard({ peer, isFavorite, transport, onPress, onToggleFavor
     <Pressable onPress={onPress} style={({ pressed }) => [{ opacity: pressed ? 0.85 : 1 }]}>
       <GlassPanel style={styles.row}>
         <View style={styles.iconWrap}>
-          <Text style={styles.icon}>{icon}</Text>
+          <Icon name={iconName} size={24} color={tokens.color.text} />
         </View>
         <View style={styles.body}>
           <Text style={styles.name} numberOfLines={1}>{friendlyName}</Text>
@@ -57,9 +60,12 @@ export function DeviceCard({ peer, isFavorite, transport, onPress, onToggleFavor
           </View>
         </View>
         <Pressable onPress={onToggleFavorite} hitSlop={12} style={styles.heart}>
-          <Text style={[styles.heartIcon, isFavorite ? styles.heartActive : null]}>
-            {isFavorite ? '♥' : '♡'}
-          </Text>
+          <Icon
+            name="heart"
+            size={20}
+            color={isFavorite ? tokens.color.danger : tokens.color.textSoft}
+            fill={isFavorite ? tokens.color.danger : 'none'}
+          />
         </Pressable>
       </GlassPanel>
     </Pressable>
@@ -81,9 +87,6 @@ const styles = StyleSheet.create({
     backgroundColor: tokens.color.surfaceSoft,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  icon: {
-    fontSize: tokens.fontSize.xl,
   },
   body: {
     flex: 1,
@@ -125,12 +128,5 @@ const styles = StyleSheet.create({
   heart: {
     paddingHorizontal: tokens.spacing.sm,
     paddingVertical: tokens.spacing.sm,
-  },
-  heartIcon: {
-    fontSize: tokens.fontSize.xl,
-    color: tokens.color.textSoft,
-  },
-  heartActive: {
-    color: tokens.color.danger,
   },
 });

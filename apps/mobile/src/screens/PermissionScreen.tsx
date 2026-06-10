@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { StyleSheet, Linking } from 'react-native';
 import { useCameraPermissions } from 'expo-camera';
 import * as Notifications from 'expo-notifications';
+import { GlassPanel, tokens } from '@dropbeam/shared-ui-rn';
 
 import { Button, Pressable, ScrollView, Text, View } from '../lib/native.js';
 
@@ -59,21 +60,21 @@ export function PermissionScreen({ onContinue }: { onContinue: () => void }) {
   };
 
   return (
-    <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.scroll}>
-      <View style={styles.card}>
+    <ScrollView style={{ flex: 1, backgroundColor: tokens.color.bg }} contentContainerStyle={styles.scroll}>
+      <GlassPanel style={styles.card}>
         <Text style={styles.eyebrow}>STEP 1 OF 2</Text>
         <Text style={styles.title}>DropBeam needs these to work</Text>
         <Text style={styles.copy}>
           You can deny any of them — the app still opens, but features that need them stay disabled.
         </Text>
 
-        <View style={{ marginTop: 8, gap: 10 }}>
+        <View style={styles.rows}>
           {rows.map((row) => {
             const s = currentStatus(row.id);
             return (
               <View key={row.id} style={styles.row}>
                 <Text style={styles.rowIcon}>{row.icon}</Text>
-                <View style={{ flex: 1 }}>
+                <View style={styles.rowBody}>
                   <Text style={styles.rowLabel}>{row.label}</Text>
                   <Text style={styles.rowCopy}>{row.copy}</Text>
                 </View>
@@ -105,81 +106,94 @@ export function PermissionScreen({ onContinue }: { onContinue: () => void }) {
         <Pressable onPress={() => void Linking.openSettings()}>
           <Text style={styles.link}>Open settings</Text>
         </Pressable>
-      </View>
+      </GlassPanel>
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  scroll: { gap: 14, padding: 16 },
+  scroll: { gap: tokens.spacing.md, padding: tokens.spacing.lg },
   card: {
-    backgroundColor: '#0a0a0a',
-    borderColor: '#1f1f1f',
-    borderRadius: 18,
-    borderWidth: 1,
-    gap: 10,
-    padding: 16,
+    gap: tokens.spacing.md,
+    padding: tokens.spacing.lg,
   },
   eyebrow: {
-    color: '#7a7a7a',
-    fontSize: 11,
-    fontWeight: '800',
-    letterSpacing: 1.5,
+    fontFamily: tokens.fontFamily.sans,
+    color: tokens.color.textDim,
+    fontSize: tokens.fontSize.xs,
+    fontWeight: tokens.fontWeight.semibold,
+    letterSpacing: tokens.letterSpacing.widest,
+    textTransform: 'uppercase',
   },
   title: {
-    color: '#ffffff',
-    fontSize: 20,
-    fontWeight: '800',
+    fontFamily: tokens.fontFamily.sans,
+    color: tokens.color.text,
+    fontSize: tokens.fontSize.xl,
+    fontWeight: tokens.fontWeight.semibold,
+    letterSpacing: tokens.letterSpacing.tight,
   },
   copy: {
-    color: '#b8b8b8',
-    lineHeight: 20,
+    fontFamily: tokens.fontFamily.sans,
+    color: tokens.color.textSoft,
+    fontSize: tokens.fontSize.body,
+    lineHeight: tokens.fontSize.body * tokens.lineHeight.normal,
   },
+  rows: { marginTop: tokens.spacing.xs, gap: tokens.spacing.sm },
   row: {
     alignItems: 'center',
-    backgroundColor: '#0f0f0f',
-    borderColor: '#1a1a1a',
-    borderRadius: 14,
+    backgroundColor: tokens.color.surface,
+    borderColor: tokens.color.panelBorder,
+    borderRadius: tokens.radius.sm,
     borderWidth: 1,
     flexDirection: 'row',
-    gap: 12,
-    padding: 12,
+    gap: tokens.spacing.md,
+    padding: tokens.spacing.md,
   },
-  rowIcon: { fontSize: 24 },
+  rowIcon: { fontSize: tokens.fontSize.xl },
+  rowBody: { flex: 1 },
   rowLabel: {
-    color: '#ffffff',
-    fontWeight: '700',
+    fontFamily: tokens.fontFamily.sans,
+    color: tokens.color.text,
+    fontSize: tokens.fontSize.base,
+    fontWeight: tokens.fontWeight.semibold,
   },
   rowCopy: {
-    color: '#8a8a8a',
-    fontSize: 12,
+    fontFamily: tokens.fontFamily.sans,
+    color: tokens.color.textDim,
+    fontSize: tokens.fontSize.caption,
     marginTop: 2,
   },
   actionRow: {
     flexDirection: 'row',
-    gap: 10,
-    marginTop: 12,
+    gap: tokens.spacing.sm,
+    marginTop: tokens.spacing.sm,
   },
   badge: {
-    borderRadius: 999,
-    fontSize: 10,
-    fontWeight: '800',
+    fontFamily: tokens.fontFamily.sans,
+    borderRadius: tokens.radius.pill,
+    borderWidth: 1,
+    fontSize: tokens.fontSize.xs,
+    fontWeight: tokens.fontWeight.semibold,
     overflow: 'hidden',
-    paddingHorizontal: 8,
+    paddingHorizontal: tokens.spacing.sm,
     paddingVertical: 3,
     textTransform: 'uppercase',
+    letterSpacing: tokens.letterSpacing.wide,
   },
-  badgeOk: { backgroundColor: '#0e2a14', color: '#9ee0a8' },
-  badgeBad: { backgroundColor: '#2a0e0e', color: '#ffb0b0' },
-  badgeWait: { backgroundColor: '#1a1a1a', color: '#8a8a8a' },
+  badgeOk: { borderColor: tokens.color.panelBorder, color: tokens.color.green },
+  badgeBad: { borderColor: tokens.color.panelBorder, color: tokens.color.danger },
+  badgeWait: { borderColor: tokens.color.panelBorder, color: tokens.color.textDim },
   footnote: {
-    color: '#7a7a7a',
-    fontSize: 12,
-    lineHeight: 18,
-    marginTop: 12,
+    fontFamily: tokens.fontFamily.sans,
+    color: tokens.color.textDim,
+    fontSize: tokens.fontSize.caption,
+    lineHeight: tokens.fontSize.caption * tokens.lineHeight.normal,
+    marginTop: tokens.spacing.sm,
   },
   link: {
-    color: '#3a8bff',
+    fontFamily: tokens.fontFamily.sans,
+    color: tokens.color.text,
+    fontWeight: tokens.fontWeight.semibold,
     textDecorationLine: 'underline',
   },
 });
